@@ -1,0 +1,26 @@
+version = "rules-v1"
+timezone = "America/New_York"
+strike_increment = 5
+wing_width = 5
+
+[freshness_seconds]
+futures = 2
+index = 3
+volatility_index = 3
+option_chain = 5
+
+[risk]
+normal_quantile = 0.95
+p1_quantile = 0.975
+p0_quantile = 0.99
+single_side_expiry_cross_max = 0.05
+single_side_touch_max = 0.10
+initial_iv_rv_ratio = 1.20
+
+[sessions]
+anchor_et = "16:00:00"
+preopen_cutoff_et = "09:29:59"
+primary_brief_et = "09:45:00"
+globex_maintenance_start_et = "17:00:00"
+globex_maintenance_end_et = "18:00:00"
+
