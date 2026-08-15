@@ -1,4 +1,28 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      MARKETPILOT_ENV: development
+      MARKETPILOT_CONFIG_VERSION: rules-v1
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      MARKETPILOT_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -15,6 +39,6 @@ services:
       timeout: 3s
       retries: 10
 
+
 volumes:
   marketpilot-postgres:
-

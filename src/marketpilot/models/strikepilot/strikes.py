@@ -41,8 +41,8 @@ def select_iron_condor_strikes(
         long_put=short_put - wing_width,
         short_call=short_call,
         long_call=short_call + wing_width,
-        put_distance=center - short_put,
-        call_distance=short_call - center,
+        put_distance=round(center - short_put, 10),
+        call_distance=round(short_call - center, 10),
     )
 
 

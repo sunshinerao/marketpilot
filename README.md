@@ -46,11 +46,41 @@ pnpm install
 pnpm dev
 ```
 
-PostgreSQL is optional for the current in-memory skeleton:
+Open [http://localhost:3000](http://localhost:3000). The dashboard renders API status
+server-side; when the API is unavailable it fails closed and displays `NO TRADE`.
+
+### Exercise the decision API
+
+The default request intentionally returns `NO_TRADE` because no live capabilities are
+verified:
 
 ```bash
-docker compose up -d postgres
+curl -sS http://localhost:8000/v1/decision/run \
+  -H 'content-type: application/json' \
+  -d '{"as_of":"2026-08-17T13:45:00Z"}'
 ```
+
+Run the non-executable design-document example (the result remains `WAIT`, not `ENTER`,
+because the baseline is not calibrated):
+
+```bash
+curl -sS http://localhost:8000/v1/decision/run \
+  -H 'content-type: application/json' \
+  -d '{
+    "as_of":"2026-08-17T13:45:00Z",
+    "values":{"center":7812.4,"up_tail":28.6,"down_tail":34.2,"joint_buffer":3.5},
+    "gates":{"data_quality":"GREEN","event_cleared":true,"option_chain_usable":true,"edge_ok":true}
+  }'
+```
+
+Run the complete container stack:
+
+```bash
+docker compose up --build
+```
+
+PostgreSQL is included for Phase 2 schema work. Decision runs currently use an explicit
+process-local store and are lost on API restart.
 
 ## Safety boundary
 
@@ -70,4 +100,3 @@ are confirmed:
 git remote add origin <repository-url>
 git push -u origin main
 ```
-
