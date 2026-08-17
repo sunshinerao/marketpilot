@@ -1,4 +1,4 @@
-.PHONY: install test check dev-api dev-web build-web up down
+.PHONY: install test check dev-api dev-web build-web up down postgres-restore-drill postgres-restore-drill-plan
 
 install:
 	python3.12 -m venv .venv
@@ -6,13 +6,13 @@ install:
 	cd apps/web && pnpm install
 
 test:
-	.venv/bin/pytest
+	.venv/bin/pytest --cov=marketpilot --cov-report=term-missing:skip-covered --cov-fail-under=90
 
 check:
 	.venv/bin/ruff check .
 	.venv/bin/mypy
-	.venv/bin/pytest
-	cd apps/web && pnpm build
+	.venv/bin/pytest --cov=marketpilot --cov-report=term-missing:skip-covered --cov-fail-under=90
+	cd apps/web && CI=true pnpm build
 
 dev-api:
 	.venv/bin/uvicorn marketpilot.services.api:app --reload --port 8000
@@ -29,3 +29,8 @@ up:
 down:
 	docker compose down
 
+postgres-restore-drill-plan:
+	.venv/bin/python -m marketpilot.restore_drill --plan
+
+postgres-restore-drill:
+	.venv/bin/python -m marketpilot.restore_drill

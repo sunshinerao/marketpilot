@@ -13,9 +13,16 @@ dependencies = [
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
   "uvicorn[standard]>=0.34,<1",
+  "webull-openapi-python-sdk>=2.0.14,<3",
 ]
 
+[project.scripts]
+marketpilot = "marketpilot.cli:main"
+
 [project.optional-dependencies]
+postgres = [
+  "psycopg[binary]>=3.2,<4",
+]
 dev = [
   "httpx>=0.28,<1",
   "mypy>=1.14,<2",
@@ -43,4 +50,3 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src/marketpilot"]
-

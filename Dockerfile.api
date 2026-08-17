@@ -5,11 +5,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system marketpilot && adduser --system --ingroup marketpilot marketpilot
+RUN addgroup --system marketpilot && adduser --system --ingroup marketpilot marketpilot \
+  && mkdir -p /app/data/audit \
+  && chown -R marketpilot:marketpilot /app/data
 
 COPY pyproject.toml README.md ./
+COPY constraints ./constraints
 COPY src ./src
-RUN python -m pip install --no-cache-dir .
+COPY config ./config
+RUN python -m pip install --no-cache-dir \
+  --constraint constraints/production.txt '.[postgres]'
 
 USER marketpilot
 EXPOSE 8000
@@ -18,4 +23,3 @@ HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
 
 CMD ["uvicorn", "marketpilot.services.api:app", "--host", "0.0.0.0", "--port", "8000"]
-

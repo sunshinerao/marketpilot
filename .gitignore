@@ -19,3 +19,8 @@ data/raw/
 data/derived/
 *.parquet
 *.log
+data/capability-probes/
+data/audit/
+.playwright-cli/
+output/postgres-restore-drill/
+output/playwright/

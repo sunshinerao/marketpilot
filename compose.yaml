@@ -4,10 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       MARKETPILOT_ENV: development
-      MARKETPILOT_CONFIG_VERSION: rules-v1
+      MARKETPILOT_AUTH_MODE: local
+      MARKETPILOT_RULES_PATH: /app/config/rules-v1.toml
+      MARKETPILOT_PROMOTION_CRITERIA_PATH: /app/config/promotion-criteria-v1.toml
+      MARKETPILOT_CODE_VERSION: ${MARKETPILOT_CODE_VERSION:-local-unpinned}
+      MARKETPILOT_AUDIT_BACKEND: sqlite
+      MARKETPILOT_AUDIT_DB: /app/data/audit/marketpilot.sqlite3
+    volumes:
+      - marketpilot-audit:/app/data/audit
     restart: unless-stopped
 
   web:
@@ -15,7 +22,7 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       MARKETPILOT_API_URL: http://api:8000
     depends_on:
@@ -23,22 +30,5 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: marketpilot
-      POSTGRES_USER: marketpilot
-      POSTGRES_PASSWORD: marketpilot
-    ports:
-      - "5432:5432"
-    volumes:
-      - marketpilot-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U marketpilot"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-
 volumes:
-  marketpilot-postgres:
+  marketpilot-audit:

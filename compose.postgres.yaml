@@ -1,0 +1,30 @@
+# Local integration overlay only. Production must use separate migration/runtime roles,
+# TLS, a secret manager, backups, KMS/HSM, and the controls in the persistence runbook.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: marketpilot
+      POSTGRES_USER: marketpilot_local
+      POSTGRES_PASSWORD: ${MARKETPILOT_POSTGRES_PASSWORD:?set MARKETPILOT_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${MARKETPILOT_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - marketpilot-postgres:/var/lib/postgresql/data
+      - ./migrations/postgresql/0001_audit.sql:/docker-entrypoint-initdb.d/0001_audit.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketpilot_local -d marketpilot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    environment:
+      MARKETPILOT_AUDIT_BACKEND: postgresql
+      MARKETPILOT_POSTGRES_DSN: ${MARKETPILOT_POSTGRES_DSN:?set MARKETPILOT_POSTGRES_DSN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  marketpilot-postgres:
