@@ -189,6 +189,13 @@ capabilities, test evidence, walkthrough, and remaining external gates.
   production deployment must use protected auth mode plus TLS and an identity-aware
   ingress before exposing any `/v1` route.
 
+## Contributing and handoff
+
+All contributors — human or AI — follow the collaboration contract in
+[CONTRIBUTING.md](CONTRIBUTING.md): safety invariants, the `make check` quality
+gate, commit discipline, documentation obligations, and the end-of-session
+handoff state.
+
 ## Git remote
 
 The private upstream is [sunshinerao/marketpilot](https://github.com/sunshinerao/marketpilot)
