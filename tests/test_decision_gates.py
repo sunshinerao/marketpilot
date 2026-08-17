@@ -16,3 +16,9 @@ def test_risk_gate_returns_stable_explainable_reasons() -> None:
         NoTradeReason.EVENT_PENDING,
         NoTradeReason.OPTION_CHAIN_UNUSABLE,
     )
+
+
+def test_amber_data_quality_fails_closed() -> None:
+    reasons = RiskGate().evaluate(DecisionGateContext(data_quality=DataQuality.AMBER))
+
+    assert reasons == (NoTradeReason.STALE_MARKET_DATA,)

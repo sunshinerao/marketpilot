@@ -22,7 +22,7 @@ class DecisionGateContext:
 class RiskGate:
     def evaluate(self, context: DecisionGateContext) -> tuple[NoTradeReason, ...]:
         reasons: list[NoTradeReason] = []
-        if context.data_quality is DataQuality.RED:
+        if context.data_quality is not DataQuality.GREEN:
             reasons.append(NoTradeReason.STALE_MARKET_DATA)
         if not context.contract_matches:
             reasons.append(NoTradeReason.CONTRACT_MISMATCH)

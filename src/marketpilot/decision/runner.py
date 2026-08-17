@@ -3,8 +3,9 @@ from __future__ import annotations
 from uuid import uuid4
 
 from marketpilot.decision.gates import DecisionGateContext, RiskGate
-from marketpilot.domain.decision import DecisionAction, DecisionResult
+from marketpilot.domain.decision import DecisionAction, DecisionResult, NoTradeReason
 from marketpilot.domain.market import MarketSnapshot
+from marketpilot.models.base import ModelArtifactIdentity
 from marketpilot.models.registry import ModelRegistry
 
 
@@ -20,9 +21,15 @@ class DecisionRunner:
         model_id: str,
         snapshot: MarketSnapshot,
         gates: DecisionGateContext,
+        required_model_identity: ModelArtifactIdentity | None = None,
     ) -> DecisionResult:
         model = self._registry.get(model_id)
         reasons = self._gate.evaluate(gates)
+        if (
+            required_model_identity is not None
+            and required_model_identity != model.descriptor.artifact_identity
+        ):
+            reasons = (*reasons, NoTradeReason.MODEL_VERSION_NOT_LOADED)
         if reasons:
             action = DecisionAction.NO_TRADE
             output: dict[str, object] = {}
