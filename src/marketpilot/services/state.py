@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from threading import RLock
-
+from marketpilot.services.persistence_contracts import AuditRepository
+from marketpilot.services.repository import SQLiteAuditRepository
 from marketpilot.services.schemas import DecisionRunOutput
 
 
 class DecisionStore:
-    """Process-local store used until the Phase 2 PostgreSQL repository is implemented."""
+    """Decision audit facade backed by the injected append-only repository."""
 
-    def __init__(self) -> None:
-        self._items: dict[str, DecisionRunOutput] = {}
-        self._lock = RLock()
+    def __init__(self, repository: AuditRepository | None = None) -> None:
+        self._repository = repository or SQLiteAuditRepository(":memory:")
 
     def put(self, decision: DecisionRunOutput) -> None:
-        with self._lock:
-            self._items[decision.run_id] = decision
+        self._repository.append_decision(decision)
 
     def get(self, run_id: str) -> DecisionRunOutput | None:
-        with self._lock:
-            return self._items.get(run_id)
+        return self._repository.get_decision(run_id)
