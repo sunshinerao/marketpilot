@@ -110,9 +110,11 @@ marketpilot probe-webull
 
 The command writes a redacted, versioned report under the ignored
 `data/capability-probes/webull/` directory and exits non-zero until every configured
-probe passes. It never stores credentials, account identifiers, or quote values. Read
-the latest result at `GET /v1/providers/webull/capabilities`; market state remains
-non-executable even when the provider probe is Green.
+probe passes. It never stores credentials, account identifiers, or quote values. Each
+run also probes account market-data subscriptions and records coverage findings: the
+Webull SDK exposes no SPX/VIX index feed, so those instruments require an independent
+licensed source. Read the latest result at `GET /v1/providers/webull/capabilities`;
+market state remains non-executable even when the provider probe is Green.
 
 Useful read-only and local-operations endpoints:
 

@@ -15,6 +15,28 @@ class CapabilityStatus(StrEnum):
     SKIPPED = "SKIPPED"
 
 
+class CoverageConclusion(StrEnum):
+    OFFERED = "OFFERED"
+    NOT_OFFERED = "NOT_OFFERED"
+    UNVERIFIED = "UNVERIFIED"
+
+
+class CoverageFinding(BaseModel):
+    """Evidence-bounded statement about provider coverage that a probe cannot pass/fail.
+
+    Findings record structural facts (for example, an SDK exposing no index
+    endpoints) or interpretation work that remains manual, so an unmet
+    requirement is a recorded conclusion rather than an untracked assumption.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    finding_id: str
+    conclusion: CoverageConclusion
+    evidence: str
+    required_action: str
+
+
 class LatencySummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -40,7 +62,7 @@ class CapabilityReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider: str = "webull"
-    report_version: str = "1"
+    report_version: str = "2"
     probed_at: datetime
     sdk_version: str
     environment: str
@@ -58,3 +80,4 @@ class CapabilityReport(BaseModel):
         "SPX_VIX_VIX1D_COVERAGE",
     )
     results: tuple[CapabilityResult, ...]
+    coverage_findings: tuple[CoverageFinding, ...] = ()

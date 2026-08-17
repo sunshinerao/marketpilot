@@ -15,6 +15,8 @@ from marketpilot.domain.capabilities import (
     CapabilityReport,
     CapabilityResult,
     CapabilityStatus,
+    CoverageConclusion,
+    CoverageFinding,
     LatencySummary,
 )
 from marketpilot.domain.contracts import normalize_explicit_es_symbol
@@ -78,6 +80,10 @@ class WebullGateway(Protocol):
 
     def option_history_m1(self, symbol: str) -> PayloadEnvelope: ...
 
+    def app_subscriptions(self) -> PayloadEnvelope: ...
+
+    def supports_index_market_data(self) -> bool: ...
+
 
 class WebullSdkGateway:
     def __init__(self, settings: WebullSettings) -> None:
@@ -86,6 +92,7 @@ class WebullSdkGateway:
 
         from webull.core.client import ApiClient  # type: ignore[import-untyped]
         from webull.data.data_client import DataClient  # type: ignore[import-untyped]
+        from webull.trade.trade.account_info import Account  # type: ignore[import-untyped]
 
         app_key = cast(SecretStr, settings.app_key).get_secret_value()
         app_secret = cast(SecretStr, settings.app_secret).get_secret_value()
@@ -104,6 +111,10 @@ class WebullSdkGateway:
         if settings.token_dir:
             api_client.set_token_dir(settings.token_dir)
         self._client = DataClient(api_client)
+        # Entitlement evidence uses the read-only Account facade only. The
+        # order-capable TradeClient is never constructed: MarketPilot has no
+        # execution path and the probe must not create one.
+        self._account = Account(api_client)
 
     @staticmethod
     def _envelope(response: Any) -> PayloadEnvelope:
@@ -157,6 +168,13 @@ class WebullSdkGateway:
             count="30",
         )
         return self._envelope(response)
+
+    def app_subscriptions(self) -> PayloadEnvelope:
+        response = self._account.get_app_subscriptions()
+        return self._envelope(response)
+
+    def supports_index_market_data(self) -> bool:
+        return hasattr(self._client, "index_market_data")
 
 
 GatewayFactory = Callable[[WebullSettings], WebullGateway]
@@ -246,7 +264,9 @@ class WebullCapabilityProbe:
             results.append(self._safe_error("sdk_initialization", exc, checked_at))
             return self._report(checked_at, results)
 
-        definitions: list[_ProbeDefinition] = []
+        definitions: list[_ProbeDefinition] = [
+            _ProbeDefinition("account_subscriptions", gateway.app_subscriptions),
+        ]
         if self._settings.es_contract:
             symbol = self._settings.es_contract
             definitions.extend(
@@ -291,7 +311,73 @@ class WebullCapabilityProbe:
 
         results.extend(self._execute(item) for item in definitions)
         results.sort(key=lambda item: item.capability_id)
-        return self._report(checked_at, results)
+        return self._report(
+            checked_at,
+            results,
+            coverage_findings=self._coverage_findings(gateway),
+        )
+
+    def _coverage_findings(self, gateway: WebullGateway) -> tuple[CoverageFinding, ...]:
+        sdk_version = _sdk_version()
+        index_supported = gateway.supports_index_market_data()
+        if index_supported:
+            index_conclusion = CoverageConclusion.UNVERIFIED
+            index_evidence = (
+                f"webull-openapi-python-sdk {sdk_version} exposes an index market-data "
+                "module, but no SPX/VIX probe is wired yet."
+            )
+            index_action = (
+                "Wire and verify SPX index probes against the account before treating "
+                "Webull as an SPX source."
+            )
+        else:
+            index_conclusion = CoverageConclusion.NOT_OFFERED
+            index_evidence = (
+                f"webull-openapi-python-sdk {sdk_version} exposes no index market-data "
+                "module; futures, option, stock, and crypto modules only."
+            )
+            index_action = (
+                "License an independent point-in-time source (for example Databento or "
+                "Massive); Webull OpenAPI is not a candidate for this instrument."
+            )
+        return (
+            CoverageFinding(
+                finding_id="SPX_INDEX_COVERAGE",
+                conclusion=index_conclusion,
+                evidence=index_evidence,
+                required_action=index_action,
+            ),
+            CoverageFinding(
+                finding_id="VIX_VIX1D_COVERAGE",
+                conclusion=index_conclusion,
+                evidence=index_evidence,
+                required_action=index_action,
+            ),
+            CoverageFinding(
+                finding_id="EXPIRED_SPXW_NBBO_DEPTH",
+                conclusion=CoverageConclusion.UNVERIFIED,
+                evidence=(
+                    "The automated probe samples 30 m1 bars for one exact option symbol; "
+                    "expired-series depth and redistribution license scope are not exercised."
+                ),
+                required_action=(
+                    "Confirm expired SPXW NBBO depth and license terms with the provider; "
+                    "evaluate Databento or Massive for point-in-time expired NBBO."
+                ),
+            ),
+            CoverageFinding(
+                finding_id="MARKET_DATA_ENTITLEMENT_SCOPE",
+                conclusion=CoverageConclusion.UNVERIFIED,
+                evidence=(
+                    "The account_subscriptions probe records the response schema only; "
+                    "mapping entries to display/non-display market-data scope is manual."
+                ),
+                required_action=(
+                    "Map observed subscription entries to market-data scope and record the "
+                    "conclusion in the readiness manifest."
+                ),
+            ),
+        )
 
     @staticmethod
     def _execute(definition: _ProbeDefinition) -> CapabilityResult:
@@ -346,6 +432,7 @@ class WebullCapabilityProbe:
         self,
         probed_at: datetime,
         results: list[CapabilityResult],
+        coverage_findings: tuple[CoverageFinding, ...] = (),
     ) -> CapabilityReport:
         passed = sum(result.status is CapabilityStatus.PASS for result in results)
         failed = any(
@@ -368,4 +455,5 @@ class WebullCapabilityProbe:
             configured=self._settings.has_credentials,
             quality=quality,
             results=tuple(results),
+            coverage_findings=coverage_findings,
         )

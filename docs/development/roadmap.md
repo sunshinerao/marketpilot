@@ -9,6 +9,8 @@ promoted while an earlier safety gate remains open.
 - [x] Official Webull SDK adapter with lazy credential loading.
 - [x] Explicit-contract guard; no `ESmain` substitution.
 - [x] Redacted probe report, versioned local persistence, CLI, and read-only API.
+- [x] Account market-data subscription probe plus SDK-surface coverage findings;
+  SPX/VIX index feeds recorded as not offered by Webull OpenAPI.
 - [x] Unit, contract, secret-leakage, installation, CLI, and API smoke tests.
 - [x] Provider-neutral external-evidence manifest and fail-closed shadow-admission gate.
 - [ ] Run against the authorized Webull OpenAPI account and record entitlement evidence.
