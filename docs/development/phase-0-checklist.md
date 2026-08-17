@@ -8,7 +8,6 @@
 - [x] Snapshot hashing supports deterministic replay identity.
 - [x] Provider adapter contracts contain no guessed Webull field mappings.
 - [x] API and dashboard boundaries are scaffolded.
-- [ ] Remote Git owner and URL confirmed, then `origin` connected.
+- [x] Remote Git owner and URL confirmed, then `origin` connected.
 - [ ] Capability probe run against the authorized Webull account.
 - [ ] Data-source licenses and secret-management environment confirmed.
-
