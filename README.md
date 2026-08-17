@@ -139,8 +139,10 @@ Useful read-only and local-operations endpoints:
 - `GET /v1/validation/promotion-criteria` and `POST /v1/validation/promotion-gate` —
   pre-registered, local-only holdout criteria and tamper-evident evaluation.
 - `GET /v1/governance/models/{model_id}/versions` and related local governance routes —
-  local challenger registration, frozen champion inspection, explicit approval, session
-  freeze, and rollback. A champion without a loaded artifact freezes decisions.
+  local challenger registration, champion inspection (optionally frozen to an explicit
+  `SCENARIO:` session via `session_id`), explicit approval, and rollback. Decision runs
+  freeze the champion to their governance session as a side effect. A champion without
+  a loaded artifact freezes decisions.
 - `GET /docs` — generated API contract.
 
 `/docs` is available only in the local development mode. Shared and production modes
