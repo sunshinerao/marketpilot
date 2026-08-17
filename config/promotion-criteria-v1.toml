@@ -1,0 +1,25 @@
+criteria_id = "strikepilot-spxw-shadow-v1"
+version = "1"
+registered_at = "2026-08-16T00:00:00Z"
+minimum_samples_per_slice = 100
+maximum_expiry_cross_rate = 0.05
+maximum_touch_rate = 0.10
+maximum_cvar = 500.0
+maximum_drawdown = 1000.0
+minimum_no_trade_pnl_difference = 0.0
+
+[[required_slices]]
+event_type = "NORMAL"
+regime = "LOW_VOL"
+
+[[required_slices]]
+event_type = "NORMAL"
+regime = "HIGH_VOL"
+
+[[required_slices]]
+event_type = "P1"
+regime = "HIGH_VOL"
+
+[[required_slices]]
+event_type = "P0"
+regime = "HIGH_VOL"
