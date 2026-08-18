@@ -92,3 +92,37 @@ pass on untouched data; the running model never rewrites itself intraday.
 - [ ] Complete an authorized multi-session shadow observation and recovery drill.
 
 Automated order submission is outside the current authorization boundary.
+
+## Phase 7 — opportunity discovery (ScoutPilot scanner family)
+
+Per ADR 0003, detectors emit evidence-bounded candidates, never decisions. Ordered
+by data availability; a detector starts only after its calibration data exists.
+
+- [ ] ScoutPilot plugin contract: versioned detector interface, candidate schema
+  (target, direction, evidence, confidence, invalidation, next checkpoint), and
+  universe declaration.
+- [ ] Daily point-in-time collection into the immutable store, starting before any
+  detector: SPXW chain snapshots via the verified Webull OPRA legs; VIX complex
+  once an index source is licensed (Phase 1).
+- [ ] IV-crush risk detector: event calendar (earnings, FOMC, CPI) × IV percentile ×
+  historical post-event realized moves; warns on long-premium exposure into events.
+- [ ] Volatility-squeeze detector: IV rank/percentile compression, realized-vol
+  compression, and term-structure state on the SPX complex.
+- [ ] Gamma-squeeze detector: chain OI/Greeks aggregation and estimated dealer gamma
+  exposure with gamma-flip level, labelled as model-based inference (method and
+  input manifest travel with every candidate).
+- [ ] Short-squeeze detector: short interest, borrow-rate proxy, and float rotation;
+  gated on external short-interest/borrow data licensing (see the data-source
+  evaluation).
+- [ ] Per-detector calibration on point-in-time history with pre-registered
+  promotion criteria; uncalibrated detectors emit nothing.
+
+Exit gate: a promoted detector emits candidates carrying evidence, invalidation
+conditions, and a rerun checkpoint; candidates flow through the alert pipeline; no
+candidate relaxes a decision gate, and `execution_enabled` remains `false`.
+
+## Phase 8+ — later model family
+
+BasisPilot, FuturesPilot, EventPilot, and VolPilot decision models remain planned
+plugins (design document v1.1 §1.1). Their scheduling follows the Phase 1 data
+decisions and the Phase 6 shadow outcome.
