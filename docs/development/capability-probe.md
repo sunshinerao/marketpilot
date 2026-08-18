@@ -36,19 +36,25 @@ non-empty success response. The report remains `verification_status=SCHEMA_ONLY`
 `production_ready=false`; MarketPilot therefore downgrades it at the live decision gate
 and keeps `NO_TRADE`. Production readiness cannot be inferred from this automated probe.
 
-## Access token activation
+## Access token activation (2FA)
 
-The SDK creates an access token during client initialization and polls until it
-becomes `NORMAL`. A freshly issued or rotated app credential commonly starts as
-`PENDING`; the probe bounds this wait (`WEBULL_TOKEN_CHECK_SECONDS`, default 65)
-instead of blocking for the SDK's 300-second default, then records the resulting
-downstream `401` responses as ordinary redacted failures.
+Accounts with two-factor authentication enabled follow the official
+[token lifecycle](https://developer.webull.com/apis/docs/authentication/token.md):
+the SDK creates an access token during client initialization, the token starts as
+`PENDING`, and Webull sends an SMS code to the phone bound to the account. While
+the probe waits, open the Webull App (Menu → Messages → OpenAPI Notifications →
+Check Now, or the automatic push prompt) and confirm the SMS code; the token turns
+`NORMAL` and the SDK proceeds automatically. Verification must complete within 5
+minutes of token creation or the token expires and the run must be repeated.
 
-If the report shows a PENDING-then-401 pattern, check the developer portal before
-re-running: the app is activated/approved, any IP allowlist includes the probing
-host, and account verification is complete. The SDK caches the token on disk; the
-gateway pins that cache to the ignored `data/webull-token/` directory so the
-credential file never lands in the repository root.
+The probe bounds this wait with `WEBULL_TOKEN_CHECK_SECONDS` (default 65). For a
+verification run, raise it (for example 240) so there is time to complete the
+in-app step. If the wait ends while the token is still `PENDING`, the report
+records the failure redacted; no portal activation or app review step exists —
+2FA confirmation is the only gate. A verified token is cached by the SDK and
+reused until 15 days without API calls; the gateway pins that cache to the
+ignored `data/webull-token/` directory so the credential file never lands in the
+repository root.
 
 ## Coverage findings (report version 2)
 
