@@ -43,7 +43,9 @@ make check     # ruff + mypy --strict + pytest (>=90% coverage) + web build
 `make check` must pass before every commit. No exceptions for "docs-only"
 changes that touch files referenced by checks. If the gate cannot run in your
 environment, say so in the commit message and ask for review instead of
-skipping silently.
+skipping silently. The same gate runs in GitHub Actions
+(`.github/workflows/quality-gate.yml`) on every push and pull request to
+`main`; a red CI run blocks merge regardless of who authored the change.
 
 ## Commit discipline
 
