@@ -118,6 +118,23 @@ class ReplayManifestEntry:
     content_hash: str
 
 
+def _manifest_digest(as_of: datetime, entries: tuple[ReplayManifestEntry, ...]) -> str:
+    """Canonical digest over the replay time and ordered entries."""
+    return freeze_snapshot(
+        {
+            "as_of": as_of,
+            "entries": [
+                {
+                    "logical_key": entry.logical_key,
+                    "record_id": entry.record_id,
+                    "content_hash": entry.content_hash,
+                }
+                for entry in entries
+            ],
+        }
+    ).snapshot_id
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayManifest:
     as_of: datetime
@@ -140,36 +157,12 @@ class ReplayManifest:
             )
             for record in sorted(records, key=lambda item: item.logical_key)
         )
-        digest = freeze_snapshot(
-            {
-                "as_of": replay_time,
-                "entries": [
-                    {
-                        "logical_key": entry.logical_key,
-                        "record_id": entry.record_id,
-                        "content_hash": entry.content_hash,
-                    }
-                    for entry in entries
-                ],
-            }
-        ).snapshot_id
-        return cls(as_of=replay_time, entries=entries, manifest_hash=digest)
+        return cls(
+            as_of=replay_time,
+            entries=entries,
+            manifest_hash=_manifest_digest(replay_time, entries),
+        )
 
     def verify_hash(self) -> None:
-        expected = ReplayManifest.create(as_of=self.as_of, records=()).manifest_hash
-        if self.entries:
-            expected = freeze_snapshot(
-                {
-                    "as_of": self.as_of,
-                    "entries": [
-                        {
-                            "logical_key": entry.logical_key,
-                            "record_id": entry.record_id,
-                            "content_hash": entry.content_hash,
-                        }
-                        for entry in self.entries
-                    ],
-                }
-            ).snapshot_id
-        if expected != self.manifest_hash:
+        if _manifest_digest(self.as_of, self.entries) != self.manifest_hash:
             raise PointInTimeError("replay manifest hash mismatch")

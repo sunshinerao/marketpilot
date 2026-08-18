@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -47,6 +48,8 @@ from marketpilot.services.stream_attribution_router import create_stream_attribu
 from marketpilot.services.stream_attribution_service import StreamAttributionService
 from marketpilot.services.validation_gate_router import create_validation_gate_router
 from marketpilot.validation.promotion_gate import load_promotion_criteria
+
+logger = logging.getLogger("marketpilot.services.api")
 
 auth_config = AuthConfig.from_env(os.environ)
 app = FastAPI(
@@ -341,6 +344,13 @@ def _frozen_governed_model_identity(
     except Exception:
         # A governance backend outage must freeze decisions, not fall back to an
         # arbitrary loaded model. The sentinel can never equal a real version.
+        # The broad catch is deliberate fail-closed behavior, but it must be
+        # audible: log the underlying failure instead of masking it silently.
+        logger.exception(
+            "governance backend failure during session freeze for model %s; "
+            "decision fails closed",
+            model_id,
+        )
         return ModelArtifactIdentity(
             version="GOVERNANCE_BACKEND_UNAVAILABLE",
             artifact_hash="GOVERNANCE_BACKEND_UNAVAILABLE",
