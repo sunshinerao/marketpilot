@@ -28,6 +28,9 @@ license scopes are evidenced. A Green provider report still does not enable exec
 
 ## Phase 2 — immutable point-in-time data and replay
 
+- [x] Historical ingestion design:
+  [historical-ingestion.md](historical-ingestion.md) (awaiting owner review before
+  the first licensed pull).
 - [x] Immutable point-in-time contract with `published_at`, `first_seen_at`, provider version, and
   content hash.
 - [x] Virtual replay clock enforcing strict `as_of` reads and revision visibility.
