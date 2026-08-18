@@ -103,9 +103,20 @@ class WebullSdkGateway:
             connect_timeout=5,
             timeout=10,
         )
-        # Prevent the SDK default from creating a local log containing response bodies.
-        api_client.set_logger(logging.getLogger("marketpilot.webull"))
+        # The SDK dumps full request state — including the x-app-key credential
+        # header — to its loggers when a call fails, and set_logger() rebinds the
+        # client module's global logger to whatever we hand it. Give it a logger
+        # that can never emit, and silence the webull logger tree as well for SDK
+        # modules that use their own module loggers. Probe failures are recorded
+        # safely by _safe_error instead.
+        silent_logger = logging.getLogger("marketpilot.webull")
+        silent_logger.setLevel(logging.CRITICAL + 1)
+        silent_logger.propagate = False
+        api_client.set_logger(silent_logger)
         api_client._stream_logger_set = True  # noqa: SLF001
+        webull_logger = logging.getLogger("webull")
+        webull_logger.setLevel(logging.CRITICAL + 1)
+        webull_logger.propagate = False
         if settings.api_endpoint:
             api_client.add_endpoint(settings.region, settings.api_endpoint)
         if settings.token_dir:

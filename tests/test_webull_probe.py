@@ -227,6 +227,24 @@ def test_sdk_gateway_reports_missing_index_module(
     assert gateway.supports_index_market_data() is False
 
 
+def test_sdk_gateway_silences_webull_logger_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import logging
+
+    _install_fake_sdk(monkeypatch, index_module=False)
+    WebullSdkGateway(configured_settings())
+
+    # The SDK rebinds its client module logger to the logger passed to
+    # set_logger(); that logger must never emit credential-bearing dumps.
+    handed_logger = logging.getLogger("marketpilot.webull")
+    assert handed_logger.level > logging.CRITICAL
+    assert handed_logger.propagate is False
+    webull_logger = logging.getLogger("webull")
+    assert webull_logger.level > logging.CRITICAL
+    assert webull_logger.propagate is False
+
+
 def test_partial_probe_is_amber_when_only_optional_symbols_are_missing() -> None:
     settings = configured_settings().model_copy(update={"spxw_option_symbol": None})
     report = WebullCapabilityProbe(settings, lambda _: FakeGateway()).run()
