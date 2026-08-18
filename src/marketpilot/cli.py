@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from marketpilot.adapters.databento import (
+    DatabentoApiError,
     DatabentoHistoricalGateway,
     DatabentoSettings,
     DayPull,
@@ -315,6 +316,18 @@ def _ingest(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {"status": "BLOCKED", "reason": str(exc), "execution_enabled": False},
+                sort_keys=True,
+            )
+        )
+        return 2
+    except DatabentoApiError as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "FAIL",
+                    "reason": f"provider error ({exc.case})",
+                    "execution_enabled": False,
+                },
                 sort_keys=True,
             )
         )

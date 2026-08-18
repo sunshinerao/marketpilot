@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from time import sleep
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -118,35 +120,60 @@ class DatabentoHistoricalGateway:
             raise DatabentoApiError(response.status_code, case)
         return response
 
+    @staticmethod
+    def _network_guard(call: Callable[[], Any]) -> Any:
+        """Transport failures become a structured case; tracebacks never leak.
+
+        Transient failures get two retries with short backoff; a persistent
+        failure surfaces once as `network_error`.
+        """
+
+        delays = (2.0, 5.0)
+        for attempt in range(len(delays) + 1):
+            if attempt:
+                sleep(delays[attempt - 1])
+            try:
+                return call()
+            except requests.exceptions.RequestException:
+                if attempt == len(delays):
+                    raise DatabentoApiError(0, "network_error") from None
+        raise DatabentoApiError(0, "network_error")
+
     def estimate_cost(self, pull: DayPull) -> float:
-        response = self._checked(
-            self._session.get(
-                f"{self._settings.base_url}/metadata.get_cost",
-                auth=self._auth,
-                params=self._params(pull),
-                timeout=30,
+        response = self._network_guard(
+            lambda: self._checked(
+                self._session.get(
+                    f"{self._settings.base_url}/metadata.get_cost",
+                    auth=self._auth,
+                    params=self._params(pull),
+                    timeout=60,
+                )
             )
         )
         return float(response.json())
 
     def record_count(self, pull: DayPull) -> int:
-        response = self._checked(
-            self._session.get(
-                f"{self._settings.base_url}/metadata.get_record_count",
-                auth=self._auth,
-                params=self._params(pull),
-                timeout=30,
+        response = self._network_guard(
+            lambda: self._checked(
+                self._session.get(
+                    f"{self._settings.base_url}/metadata.get_record_count",
+                    auth=self._auth,
+                    params=self._params(pull),
+                    timeout=60,
+                )
             )
         )
         return int(response.json())
 
     def download_day(self, pull: DayPull) -> bytes:
-        response = self._checked(
-            self._session.post(
-                f"{self._settings.base_url}/timeseries.get_range",
-                auth=self._auth,
-                data={**self._params(pull), "encoding": "dbn"},
-                timeout=(5, 300),
+        response = self._network_guard(
+            lambda: self._checked(
+                self._session.post(
+                    f"{self._settings.base_url}/timeseries.get_range",
+                    auth=self._auth,
+                    data={**self._params(pull), "encoding": "dbn"},
+                    timeout=(5, 300),
+                )
             )
         )
         payload = bytes(response.content)
