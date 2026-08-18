@@ -13,7 +13,13 @@ promoted while an earlier safety gate remains open.
   SPX/VIX index feeds recorded as not offered by Webull OpenAPI.
 - [x] Unit, contract, secret-leakage, installation, CLI, and API smoke tests.
 - [x] Provider-neutral external-evidence manifest and fail-closed shadow-admission gate.
+- [x] Data-source evaluation for ES/SPX/VIX/expired SPXW/short-interest coverage:
+  [data-source-evaluation.md](data-source-evaluation.md).
 - [ ] Run against the authorized Webull OpenAPI account and record entitlement evidence.
+  Progress 2026-08-18: production probe run; credentials, account subscriptions, and
+  all three SPXW/OPRA legs PASS at schema level (report v2, redacted). Remaining:
+  entitlement-scope mapping into the readiness manifest, multi-sample latency, and
+  timestamp-semantics review.
 - [ ] Confirm independent/licensed coverage for SPX, VIX/VIX1D, expired SPXW NBBO, and
   event/news/social sources where Webull does not provide point-in-time coverage.
 
