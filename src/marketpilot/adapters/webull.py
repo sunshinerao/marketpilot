@@ -163,7 +163,7 @@ class WebullSdkGateway:
         response = self._client.futures_market_data.get_futures_history_bars(
             symbols=symbol,
             category=FUTURES_CATEGORY,
-            timespan="m1",
+            timespan="M1",
             count="30",
         )
         return self._envelope(response)
@@ -189,7 +189,7 @@ class WebullSdkGateway:
         response = self._client.option_market_data.get_option_history_bars(
             symbols=symbol,
             category=OPTION_CATEGORY,
-            timespan="m1",
+            timespan="M1",
             count="30",
         )
         return self._envelope(response)
