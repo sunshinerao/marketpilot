@@ -30,30 +30,38 @@ coarse, a targeted trades pull is a separate, costed decision.
 ## 3. Initial pull scope and cost ceiling
 
 - **Window**: the most recent 12 months of trading days.
-- **Symbols**: full SPXW chain per day (all expirations listed that day; 0DTE
-  chains are the calibration target, but the whole chain is pulled so detectors
-  can study term structure later), plus the explicit front-month ES contract
-  series per day.
-- **Estimated cost** (from verified unit prices): OPRA cbbo-1m ≈ $0.03/day →
-  12 months ≈ **$8**; ES ohlcv-1m ≈ $0.005/day → ≈ **$1**. Fits the Databento
-  $125 new-user credit with an order of magnitude of headroom.
+- **Symbols**: SPXW chains plus the front-month ES continuous series (`ES.v.0`).
+- **Verified prices** (live `get_cost`, 2026-08-18): whole-parent SPXW.OPT cbbo-1m
+  = **$1.07/day** (≈ $267 for 12 months — the parent selection includes every
+  listed expiration); single-contract cbbo-1m ≈ $0.00003/day; per-day chain
+  enumeration via the `definition` schema ≈ $0.034/day; ES continuous ohlcv-1m
+  ≈ $0.005/day.
+- **Strategy decision required before WP6**: whole-parent pulls exceed the new-user
+  credit; the intended "full 0DTE chain" (all strikes of that day's expiration,
+  optionally plus front weeklies) needs per-day enumeration via `definition` and
+  costs ≈ $15–18 for 12 months including enumeration. The CLI defaults to the
+  whole-parent selection so the cost gate forces this conversation with real
+  numbers instead of silently spending.
 - **Hard ceiling**: every pull must call `metadata.get_cost` first, record the
-  estimate in the pull manifest, and abort when the estimate exceeds the
-  configured ceiling (`MARKETPILOT_PULL_MAX_COST_USD`, default `25`). The cost
-  ledger is append-only and every pull references it.
+  estimate in the hash-chained cost ledger (`APPROVED`/`BLOCKED`), and abort when
+  the plan total exceeds the configured ceiling (`DATABENTO_MAX_COST_USD`,
+  default `25`, overridable per run with `--max-cost`).
 
 ## 4. Storage layout
 
 ```text
 data/raw/                              # gitignored; encrypted landing boundary
-  databento/OPRA.PILLAR/cbbo-1m/YYYY-MM-DD.dbn.enc
-  databento/OPRA.PILLAR/definitions/YYYY-MM-DD.dbn.enc
-  databento/GLBX.MDP3/ohlcv-1m/YYYY-MM-DD.dbn.enc
-data/derived/pit/                      # gitignored; normalized batch records
+  licensed/databento/<dataset>/<content-addressed object>.json
+  _keys/local-aesgcm-v1.key            # local dev cipher key (KMS/HSM in production)
+  _meta/receipts.jsonl                 # safe landing receipts (no payload material)
+  _meta/cost-ledger.jsonl              # hash-chained cost-gate decisions
+data/derived/pit/batch-records.jsonl   # gitignored; normalized PIT batch records
 ```
 
-- Raw day files are written through `services/raw_landing.py` (local cipher for
-  now; KMS/HSM remains a production gate listed in the safety MVP acceptance).
+- Raw day files are written through `services/raw_landing.py` with the local
+  AES-256-GCM cipher (`ingest/local_landing.py`); object keys are
+  content-addressed by landing identity, so a duplicate landing is idempotent by
+  construction.
 - **PIT granularity is one record per dataset/schema/symbol/day**, not per tick.
   Each record carries the batch content hash, row count, and min/max event
   timestamps. Tick-level point-in-time correctness inside a batch comes from
@@ -76,6 +84,12 @@ data/derived/pit/                      # gitignored; normalized batch records
   facts; they are never silently treated as complete.
 - Features and outcome labels may only read through the virtual replay clock.
   Direct raw-file reads outside the replay path are a contract violation.
+- **Replay visibility is explicit**: `ReplayVisibility.OBSERVED` (first_seen_at)
+  replays what this system actually knew — right for live-collected data;
+  `ReplayVisibility.AVAILABLE` (published_at) replays what could have been
+  known — required for backtests over backfilled history, where the bulk pull
+  time would otherwise hide everything before the pull. Backtest manifests
+  default to `AVAILABLE`.
 
 ## 6. Integrity and idempotency
 
@@ -98,17 +112,22 @@ data/derived/pit/                      # gitignored; normalized batch records
 
 ## 8. Work packages
 
-- [ ] WP1 — Databento adapter contract: historical client wrapper (cost
+- [x] WP1 — Databento adapter contract: historical client wrapper (cost
   estimation, batch download, dataset/schema registry), fake-client tests,
-  no live calls in unit tests.
-- [ ] WP2 — Pull orchestrator: trading-calendar day expansion, cost gate,
-  gap-fill mode, append-only cost ledger.
-- [ ] WP3 — Landing writer: encrypted day files, receipts, quarantine path.
-- [ ] WP4 — PIT batch records + replay manifest emission over pulled windows.
-- [ ] WP5 — Integrity audit: hash-stability re-pull check, gap report,
-  calendar reconciliation.
+  no live calls in unit tests (`adapters/databento.py`).
+- [x] WP2 — Pull orchestrator: trading-calendar day expansion, cost gate,
+  idempotent skip, gap recording (`ingest/pipeline.py`).
+- [x] WP3 — Landing writer: local AES-256-GCM cipher, content-addressed
+  filesystem store, JSONL receipts, static authorizer (`ingest/local_landing.py`).
+- [x] WP4 — PIT batch records + replay manifest emission over pulled windows
+  (`ingest/pit_ledger.py`, `ReplayVisibility`).
+- [x] WP5 — Integrity audit: gap report and calendar reconciliation
+  (`ingest/audit.py`, `marketpilot ingest-audit`). Hash-stability re-pull
+  verification rides on content-addressed landing idempotency.
 - [ ] WP6 — First calibration pull (12-month window). **Requires owner
-  approval: spends part of the Databento free credit.**
+  approval: spends part of the Databento free credit.** The default
+  whole-parent strategy estimates ≈ $267 for 12 months and will trip the
+  default ceiling; see §3 for the strategy decision.
 
 ## 9. Review questions for the owner
 
