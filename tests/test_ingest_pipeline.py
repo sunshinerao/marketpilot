@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from marketpilot.adapters.databento import DatabentoApiError, DayPull
+from marketpilot.adapters.databento import DatabentoApiError, DayPull, enumerate_expiring
 from marketpilot.ingest.audit import audit_window
 from marketpilot.ingest.calendar import load_equity_calendar, trading_days
 from marketpilot.ingest.cost_ledger import CostLedger
@@ -18,6 +18,8 @@ from marketpilot.ingest.local_landing import (
 from marketpilot.ingest.pipeline import (
     LANDING_PRINCIPAL,
     LANDING_PURPOSE,
+    SPXW_0DTE_SCOPE,
+    DatabentoChainResolver,
     DayStatus,
     IngestCostCeilingExceeded,
     IngestPipeline,
@@ -32,10 +34,17 @@ WINDOW_END = date(2026, 8, 17)
 
 
 class FakeGateway:
-    def __init__(self, cost: float = 1.0, fail_on: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        cost: float = 1.0,
+        fail_on: set[str] | None = None,
+        definitions: dict[date, bytes] | None = None,
+    ) -> None:
         self._cost = cost
         self._fail_on = fail_on or set()
+        self._definitions = definitions or {}
         self.downloads = 0
+        self.definition_downloads = 0
 
     def estimate_cost(self, pull: DayPull) -> float:
         return self._cost
@@ -48,6 +57,41 @@ class FakeGateway:
         if pull.logical_key in self._fail_on:
             raise DatabentoApiError(500, "server_error")
         return f"payload:{pull.logical_key}".encode()
+
+    def download_definitions(self, day: date) -> bytes:
+        self.definition_downloads += 1
+        if day not in self._definitions:
+            raise DatabentoApiError(404, "no_definitions")
+        return self._definitions[day]
+
+
+def _ns(day: date) -> int:
+    return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp()) * 1_000_000_000
+
+
+def _osi(day: date, right: str, strike: str) -> str:
+    return f"{'SPXW'.ljust(6)}{day:%y%m%d}{right}{strike}"
+
+
+def definitions_csv(day: date, strikes: tuple[str, ...] = ("06000000", "06050000")) -> bytes:
+    """A definition CSV with one call and one put expiring on ``day`` per strike."""
+
+    lines = ["raw_symbol,expiration"]
+    for strike in strikes:
+        lines.append(f"{_osi(day, 'C', strike)},{_ns(day)}")
+        lines.append(f"{_osi(day, 'P', strike)},{_ns(day)}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def zero_dte_pull(day: date) -> DayPull:
+    return DayPull(
+        dataset="OPRA.PILLAR",
+        schema="cbbo-1m",
+        day=day,
+        stype_in="raw_symbol",
+        symbols=("SPXW.OPT",),
+        scope=SPXW_0DTE_SCOPE,
+    )
 
 
 def spec_pull(day: date, scope: str = "spxw-whole-chain") -> DayPull:
@@ -212,3 +256,121 @@ def test_local_cipher_roundtrip_and_redacted_repr(tmp_path: Path) -> None:
     assert cipher.decrypt(envelope, associated_data=b"ad") == b"licensed-payload"
     assert "licensed-payload" not in repr(envelope)
     assert envelope.key_id == "local-aesgcm-v1"
+
+
+def test_0dte_plan_resolves_chain_and_lands_definitions(tmp_path: Path) -> None:
+    days = window_days()
+    gateway = FakeGateway(definitions={day: definitions_csv(day) for day in days})
+    pipeline = build_pipeline(tmp_path, gateway)
+
+    plan = pipeline.build_plan(
+        [zero_dte_pull(day) for day in days],
+        ceiling_usd=25.0,
+        chain_resolver=DatabentoChainResolver(gateway),
+    )
+
+    assert len(plan.items) == 2
+    for item, day in zip(plan.items, days, strict=True):
+        assert item.pull.scope == SPXW_0DTE_SCOPE
+        assert item.pull.stype_in == "raw_symbol"
+        expected = enumerate_expiring(definitions_csv(day), day)
+        assert item.pull.symbols == expected
+        assert all(len(symbol) == 21 for symbol in item.pull.symbols)
+        assert item.estimated_usd == 1.0
+    # Total = cbbo estimates + one definition estimate per resolved day.
+    assert plan.total_estimated_usd == 4.0
+    assert plan.empty_chain_outcomes == ()
+
+    # The definition CSVs used for enumeration landed as their own PIT batches.
+    records = PitBatchLedger(tmp_path / "pit" / "records.jsonl").load()
+    definition_records = [r for r in records if "/definition/" in r.logical_key]
+    assert len(definition_records) == 2
+    content = definition_records[0].content()
+    assert content["scope"] == "spxw-definitions"
+    assert content["schema"] == "definition"
+    assert content["record_count"] == 4
+    assert definition_records[0].schema_version == "definition"
+    receipts = (tmp_path / "raw" / "_meta" / "receipts.jsonl").read_text()
+    assert "text/csv" in receipts
+    assert "SPXW" not in receipts  # padded raw symbols never appear in receipts
+
+    report = pipeline.run(plan)
+    assert report.count(DayStatus.LANDED) == 2
+    assert gateway.downloads == 2
+    assert gateway.definition_downloads == 2
+
+
+def test_0dte_empty_chain_day_produces_empty_chain_outcome(tmp_path: Path) -> None:
+    day = window_days()[0]
+    other = day + timedelta(days=7)
+    # Definitions exist but nothing expires on the requested day.
+    csv_bytes = f"raw_symbol,expiration\n{_osi(other, 'C', '06000000')},{_ns(other)}\n".encode()
+    gateway = FakeGateway(definitions={day: csv_bytes})
+    pipeline = build_pipeline(tmp_path, gateway)
+
+    plan = pipeline.build_plan(
+        [zero_dte_pull(day)],
+        ceiling_usd=25.0,
+        chain_resolver=DatabentoChainResolver(gateway),
+    )
+
+    assert plan.items == ()
+    assert len(plan.empty_chain_outcomes) == 1
+    outcome = plan.empty_chain_outcomes[0]
+    assert outcome.status is DayStatus.EMPTY_CHAIN
+    assert outcome.logical_key == f"OPRA.PILLAR/cbbo-1m/{SPXW_0DTE_SCOPE}/{day.isoformat()}"
+    # Only the enumeration estimate counts; no cbbo estimate, no download.
+    assert plan.total_estimated_usd == 1.0
+
+    report = pipeline.run(plan)
+    assert report.count(DayStatus.EMPTY_CHAIN) == 1
+    assert report.count(DayStatus.LANDED) == 0
+    assert gateway.downloads == 0
+    # The enumeration itself is still auditable.
+    ledger = PitBatchLedger(tmp_path / "pit" / "records.jsonl")
+    assert ledger.find(f"OPRA.PILLAR/definition/spxw-definitions/{day.isoformat()}") is not None
+
+
+def test_0dte_pull_without_resolver_is_rejected(tmp_path: Path) -> None:
+    pipeline = build_pipeline(tmp_path, FakeGateway())
+    with pytest.raises(ValueError, match="chain resolver"):
+        pipeline.build_plan([zero_dte_pull(window_days()[0])], ceiling_usd=25.0)
+
+
+def test_chain_resolver_caches_definitions_per_day(tmp_path: Path) -> None:
+    day = window_days()[0]
+    gateway = FakeGateway(definitions={day: definitions_csv(day)})
+    resolver = DatabentoChainResolver(gateway)
+
+    first = resolver.resolve(day)
+    second = resolver.resolve(day)
+    payload = resolver.definitions_payload(day)
+
+    assert first == second
+    assert payload == definitions_csv(day)
+    assert gateway.definition_downloads == 1
+
+
+def test_0dte_rerun_skips_enumeration_for_landed_days(tmp_path: Path) -> None:
+    days = window_days()
+    gateway = FakeGateway(definitions={day: definitions_csv(day) for day in days})
+    pipeline = build_pipeline(tmp_path, gateway)
+    pipeline.run(
+        pipeline.build_plan(
+            [zero_dte_pull(day) for day in days],
+            ceiling_usd=25.0,
+            chain_resolver=DatabentoChainResolver(gateway),
+        )
+    )
+    assert gateway.definition_downloads == 2
+
+    # A re-run over the same window must not re-spend on enumeration.
+    plan = pipeline.build_plan(
+        [zero_dte_pull(day) for day in days],
+        ceiling_usd=25.0,
+        chain_resolver=DatabentoChainResolver(gateway),
+    )
+    assert gateway.definition_downloads == 2
+    assert all(item.estimated_usd == 0.0 for item in plan.items)
+    report = pipeline.run(plan)
+    assert report.count(DayStatus.SKIPPED_PRESENT) == 2

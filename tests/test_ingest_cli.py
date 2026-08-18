@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from marketpilot.cli import _default_pulls, _landing_service, main
+from marketpilot.cli import _default_pulls, _landing_service, _parser, main
 
 WINDOW = ["--start", "2026-08-14", "--end", "2026-08-17"]
 
@@ -57,13 +57,44 @@ def test_ingest_audit_reports_missing_days(
 def test_default_pulls_cover_chain_and_front_month() -> None:
     from datetime import date
 
-    pulls = _default_pulls([date(2026, 8, 17)])
+    pulls = _default_pulls([date(2026, 8, 17)], strategy="whole-chain")
     assert len(pulls) == 2
     by_dataset = {pull.dataset: pull for pull in pulls}
     assert by_dataset["OPRA.PILLAR"].symbols == ("SPXW.OPT",)
     assert by_dataset["OPRA.PILLAR"].stype_in == "parent"
+    assert by_dataset["OPRA.PILLAR"].scope == "spxw-whole-chain"
     assert by_dataset["GLBX.MDP3"].symbols == ("ES.v.0",)
     assert by_dataset["GLBX.MDP3"].stype_in == "continuous"
+
+
+def test_default_pulls_0dte_strategy_uses_raw_symbol_placeholder() -> None:
+    from datetime import date
+
+    pulls = _default_pulls([date(2026, 8, 17)], strategy="0dte")
+    assert len(pulls) == 2
+    by_dataset = {pull.dataset: pull for pull in pulls}
+    spxw = by_dataset["OPRA.PILLAR"]
+    assert spxw.stype_in == "raw_symbol"
+    assert spxw.scope == "spxw-0dte"
+    assert spxw.symbols == ("SPXW.OPT",)  # replaced by chain resolution at plan time
+    # The ES continuous pull is unchanged across strategies.
+    assert by_dataset["GLBX.MDP3"].symbols == ("ES.v.0",)
+    assert by_dataset["GLBX.MDP3"].stype_in == "continuous"
+
+
+def test_default_pulls_rejects_unknown_strategy() -> None:
+    from datetime import date
+
+    with pytest.raises(ValueError, match="unknown strategy"):
+        _default_pulls([date(2026, 8, 17)], strategy="everything")
+
+
+def test_strategy_flag_defaults_to_0dte_and_accepts_whole_chain() -> None:
+    base = ["ingest-plan", *WINDOW]
+    assert _parser().parse_args(base).strategy == "0dte"
+    assert _parser().parse_args([*base, "--strategy", "whole-chain"]).strategy == "whole-chain"
+    run_args = _parser().parse_args(["ingest-run", *WINDOW, "--confirm-spend"])
+    assert run_args.strategy == "0dte"
 
 
 def test_landing_service_constructs_with_local_key(tmp_path: Path) -> None:

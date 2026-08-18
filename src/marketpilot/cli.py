@@ -30,6 +30,8 @@ from marketpilot.ingest.local_landing import (
 from marketpilot.ingest.pipeline import (
     LANDING_PRINCIPAL,
     LANDING_PURPOSE,
+    SPXW_0DTE_SCOPE,
+    DatabentoChainResolver,
     DayStatus,
     IngestCostCeilingExceeded,
     IngestPipeline,
@@ -105,6 +107,13 @@ def _parser() -> argparse.ArgumentParser:
         ingest.add_argument("--max-cost", type=float, default=None)
         ingest.add_argument("--data-root", default="data/raw")
         ingest.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+        ingest.add_argument(
+            "--strategy",
+            choices=("0dte", "whole-chain"),
+            default="0dte",
+            help="SPXW selection: only contracts expiring that day (default, "
+            "owner-approved) or the whole parent chain",
+        )
     commands.choices["ingest-run"].add_argument(
         "--confirm-spend",
         action="store_true",
@@ -251,19 +260,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
-def _default_pulls(days: Sequence[date]) -> list[DayPull]:
+def _default_pulls(days: Sequence[date], *, strategy: str) -> list[DayPull]:
+    if strategy not in {"0dte", "whole-chain"}:
+        raise ValueError(f"unknown strategy {strategy!r}")
     pulls: list[DayPull] = []
     for day in days:
-        pulls.append(
-            DayPull(
-                dataset="OPRA.PILLAR",
-                schema="cbbo-1m",
-                day=day,
-                stype_in="parent",
-                symbols=("SPXW.OPT",),
-                scope="spxw-whole-chain",
+        if strategy == "0dte":
+            pulls.append(
+                DayPull(
+                    dataset="OPRA.PILLAR",
+                    schema="cbbo-1m",
+                    day=day,
+                    stype_in="raw_symbol",
+                    # Placeholder; the chain resolver replaces it with the
+                    # enumerated 0DTE raw symbols during plan building.
+                    symbols=("SPXW.OPT",),
+                    scope=SPXW_0DTE_SCOPE,
+                )
             )
-        )
+        else:
+            pulls.append(
+                DayPull(
+                    dataset="OPRA.PILLAR",
+                    schema="cbbo-1m",
+                    day=day,
+                    stype_in="parent",
+                    symbols=("SPXW.OPT",),
+                    scope="spxw-whole-chain",
+                )
+            )
         pulls.append(
             DayPull(
                 dataset="GLBX.MDP3",
@@ -308,15 +333,21 @@ def _ingest(args: argparse.Namespace) -> int:
         print("status=FAIL reason=ingest-run requires --confirm-spend (owner approval)")
         return 2
     ceiling = args.max_cost if args.max_cost is not None else settings.max_cost_usd
+    gateway = DatabentoHistoricalGateway(settings)
     pipeline = IngestPipeline(
-        gateway=DatabentoHistoricalGateway(settings),
+        gateway=gateway,
         landing=_landing_service(args.data_root),
         pit_ledger=PitBatchLedger(args.pit_ledger),
         cost_ledger=CostLedger(Path(args.data_root) / "_meta" / "cost-ledger.jsonl"),
         report_path=Path(args.data_root) / "_meta" / "pull-reports.jsonl",
     )
+    resolver = DatabentoChainResolver(gateway) if args.strategy == "0dte" else None
     try:
-        plan = pipeline.build_plan(_default_pulls(days), ceiling_usd=ceiling)
+        plan = pipeline.build_plan(
+            _default_pulls(days, strategy=args.strategy),
+            ceiling_usd=ceiling,
+            chain_resolver=resolver,
+        )
     except IngestCostCeilingExceeded as exc:
         print(
             json.dumps(
@@ -343,8 +374,10 @@ def _ingest(args: argparse.Namespace) -> int:
                 {
                     "status": "PLAN",
                     "plan_id": plan.plan_id,
+                    "strategy": args.strategy,
                     "trading_days": len(days),
                     "batches": len(plan.items),
+                    "empty_chain_days": len(plan.empty_chain_outcomes),
                     "total_estimated_usd": plan.total_estimated_usd,
                     "ceiling_usd": plan.ceiling_usd,
                 },
@@ -362,6 +395,7 @@ def _ingest(args: argparse.Namespace) -> int:
                 "skipped_present": report.count(DayStatus.SKIPPED_PRESENT),
                 "not_due": report.count(DayStatus.NOT_DUE),
                 "gaps": report.count(DayStatus.GAP),
+                "empty_chain": report.count(DayStatus.EMPTY_CHAIN),
             },
             sort_keys=True,
         )

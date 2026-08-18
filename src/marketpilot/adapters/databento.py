@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -76,6 +78,69 @@ class HistoricalGateway(Protocol):
 
     def download_day(self, pull: DayPull) -> bytes: ...
 
+    def download_definitions(self, day: date) -> bytes: ...
+
+
+DEFINITIONS_DATASET = "OPRA.PILLAR"
+DEFINITIONS_SCHEMA = "definition"
+DEFINITIONS_SCOPE = "spxw-definitions"
+SPXW_PARENT_SYMBOL = "SPXW.OPT"
+# Databento's UNDEFINED sentinel for uint64 fields (verified live 2026-08-19).
+UNDEFINED_TIMESTAMP_NS = 9_223_372_036_854_775_807
+
+
+def spxw_definitions_pull(day: date) -> DayPull:
+    """The parent-symbology definition pull that enumerates one day's SPXW chain."""
+
+    return DayPull(
+        dataset=DEFINITIONS_DATASET,
+        schema=DEFINITIONS_SCHEMA,
+        day=day,
+        stype_in="parent",
+        symbols=(SPXW_PARENT_SYMBOL,),
+        scope=DEFINITIONS_SCOPE,
+    )
+
+
+def enumerate_expiring(definitions_csv: bytes, day: date) -> tuple[str, ...]:
+    """Return the raw symbols whose expiration date equals ``day``, sorted.
+
+    The definition CSV carries ``expiration`` as nanoseconds since the epoch at
+    UTC midnight of the expiration date (column name verified live 2026-08-19);
+    a ``maturity_date`` ISO-date column is accepted as a fallback. Raw symbols
+    are 21-character padded OSI strings (root left-justified); the padding is
+    part of the raw_symbol symbology and is preserved verbatim.
+    """
+
+    reader = csv.DictReader(io.StringIO(definitions_csv.decode("utf-8")))
+    fieldnames = reader.fieldnames
+    if not fieldnames:
+        raise ValueError("definitions CSV has no header row")
+    matches: set[str] = set()
+    if "expiration" in fieldnames:
+        for row in reader:
+            raw = row.get("raw_symbol") or ""
+            expiration = (row.get("expiration") or "").strip()
+            if not raw or not expiration:
+                continue
+            nanos = int(expiration)
+            if nanos == UNDEFINED_TIMESTAMP_NS:
+                continue
+            expiry = datetime.fromtimestamp(nanos // 1_000_000_000, tz=UTC).date()
+            if expiry == day:
+                matches.add(raw)
+    elif "maturity_date" in fieldnames:
+        for row in reader:
+            raw = row.get("raw_symbol") or ""
+            maturity = (row.get("maturity_date") or "").strip()
+            if not raw or not maturity:
+                continue
+            if date.fromisoformat(maturity) == day:
+                matches.add(raw)
+    else:
+        raise ValueError("definitions CSV has neither 'expiration' nor 'maturity_date'")
+    return tuple(sorted(matches))
+
 
 def _day_window_utc(day: date) -> tuple[str, str]:
     start_local = datetime.combine(day, time(0, 0), tzinfo=NEW_YORK)
@@ -141,12 +206,13 @@ class DatabentoHistoricalGateway:
         raise DatabentoApiError(0, "network_error")
 
     def estimate_cost(self, pull: DayPull) -> float:
+        # POST with a form body: raw_symbol chains exceed the GET URL limit.
         response = self._network_guard(
             lambda: self._checked(
-                self._session.get(
+                self._session.post(
                     f"{self._settings.base_url}/metadata.get_cost",
                     auth=self._auth,
-                    params=self._params(pull),
+                    data=self._params(pull),
                     timeout=60,
                 )
             )
@@ -156,10 +222,10 @@ class DatabentoHistoricalGateway:
     def record_count(self, pull: DayPull) -> int:
         response = self._network_guard(
             lambda: self._checked(
-                self._session.get(
+                self._session.post(
                     f"{self._settings.base_url}/metadata.get_record_count",
                     auth=self._auth,
-                    params=self._params(pull),
+                    data=self._params(pull),
                     timeout=60,
                 )
             )
@@ -174,6 +240,25 @@ class DatabentoHistoricalGateway:
                     auth=self._auth,
                     data={**self._params(pull), "encoding": "dbn"},
                     timeout=(5, 300),
+                )
+            )
+        )
+        payload = bytes(response.content)
+        if not payload:
+            raise DatabentoApiError(200, "empty_payload")
+        return payload
+
+    def download_definitions(self, day: date) -> bytes:
+        """Download one day's SPXW contract definitions as CSV (small schema)."""
+
+        pull = spxw_definitions_pull(day)
+        response = self._network_guard(
+            lambda: self._checked(
+                self._session.post(
+                    f"{self._settings.base_url}/timeseries.get_range",
+                    auth=self._auth,
+                    data={**self._params(pull), "encoding": "csv"},
+                    timeout=(5, 120),
                 )
             )
         )

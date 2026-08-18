@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, time
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from marketpilot.adapters.databento import DatabentoApiError, DayPull, HistoricalGateway
+from marketpilot.adapters.databento import (
+    DatabentoApiError,
+    DayPull,
+    HistoricalGateway,
+    enumerate_expiring,
+    spxw_definitions_pull,
+)
 from marketpilot.domain.point_in_time import PointInTimeRecord
 from marketpilot.domain.snapshot import freeze_snapshot
 from marketpilot.ingest.cost_ledger import CostLedger
@@ -19,6 +26,8 @@ PROVIDER = "databento"
 PROVIDER_VERSION = "databento-historical-v1"
 LANDING_PRINCIPAL = "ingest-pipeline"
 LANDING_PURPOSE = "licensed-history-pull"
+SPXW_0DTE_SCOPE = "spxw-0dte"
+DEFINITIONS_CONTENT_TYPE = "text/csv"
 
 
 class IngestCostCeilingExceeded(RuntimeError):
@@ -30,6 +39,37 @@ class DayStatus(StrEnum):
     SKIPPED_PRESENT = "SKIPPED_PRESENT"
     NOT_DUE = "NOT_DUE"
     GAP = "GAP"
+    EMPTY_CHAIN = "EMPTY_CHAIN"
+
+
+class ChainResolver(Protocol):
+    """Resolves the contracts expiring on a trading day; caches per day."""
+
+    def resolve(self, day: date) -> tuple[str, ...]: ...
+
+    def definitions_payload(self, day: date) -> bytes:
+        """The cached definition CSV the enumeration was derived from."""
+        ...
+
+
+class DatabentoChainResolver:
+    """Downloads each day's definition CSV once and caches the enumeration."""
+
+    def __init__(self, gateway: HistoricalGateway) -> None:
+        self._gateway = gateway
+        self._cache: dict[date, tuple[bytes, tuple[str, ...]]] = {}
+
+    def resolve(self, day: date) -> tuple[str, ...]:
+        return self._cached(day)[1]
+
+    def definitions_payload(self, day: date) -> bytes:
+        return self._cached(day)[0]
+
+    def _cached(self, day: date) -> tuple[bytes, tuple[str, ...]]:
+        if day not in self._cache:
+            payload = self._gateway.download_definitions(day)
+            self._cache[day] = (payload, enumerate_expiring(payload, day))
+        return self._cache[day]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,19 +79,20 @@ class PlannedDay:
 
 
 @dataclass(frozen=True, slots=True)
+class DayOutcome:
+    logical_key: str
+    status: DayStatus
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class PullPlan:
     plan_id: str
     created_at: datetime
     ceiling_usd: float
     total_estimated_usd: float
     items: tuple[PlannedDay, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class DayOutcome:
-    logical_key: str
-    status: DayStatus
-    detail: str
+    empty_chain_outcomes: tuple[DayOutcome, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,13 +129,37 @@ class IngestPipeline:
         pulls: list[DayPull],
         *,
         ceiling_usd: float,
+        chain_resolver: ChainResolver | None = None,
     ) -> PullPlan:
         created_at = datetime.now(UTC)
-        items = tuple(
-            PlannedDay(pull=pull, estimated_usd=self._gateway.estimate_cost(pull))
-            for pull in pulls
-        )
-        total = round(sum(item.estimated_usd for item in items), 6)
+        items: list[PlannedDay] = []
+        empty_chain_outcomes: list[DayOutcome] = []
+        enumeration_usd = 0.0
+        for pull in pulls:
+            if pull.scope == SPXW_0DTE_SCOPE:
+                if chain_resolver is None:
+                    raise ValueError(f"scope {SPXW_0DTE_SCOPE!r} requires a chain resolver")
+                if self._pit_ledger.find(pull.logical_key) is not None:
+                    # Already landed: run() reports SKIPPED_PRESENT; do not spend
+                    # on enumeration just to estimate an already-present day.
+                    items.append(PlannedDay(pull=pull, estimated_usd=0.0))
+                    continue
+                resolved, estimate = self._resolve_zero_dte(pull, chain_resolver)
+                enumeration_usd += estimate
+                if resolved is None:
+                    empty_chain_outcomes.append(
+                        DayOutcome(
+                            pull.logical_key,
+                            DayStatus.EMPTY_CHAIN,
+                            "no contracts expiring this day",
+                        )
+                    )
+                    continue
+                pull = resolved
+            items.append(
+                PlannedDay(pull=pull, estimated_usd=self._gateway.estimate_cost(pull))
+            )
+        total = round(sum(item.estimated_usd for item in items) + enumeration_usd, 6)
         plan_id = freeze_snapshot(
             {
                 "created_at": created_at,
@@ -102,6 +167,10 @@ class IngestPipeline:
                 "items": [
                     {"logical_key": item.pull.logical_key, "estimated_usd": item.estimated_usd}
                     for item in items
+                ],
+                "enumeration_usd": round(enumeration_usd, 6),
+                "empty_chain_days": [
+                    outcome.logical_key for outcome in empty_chain_outcomes
                 ],
             }
         ).snapshot_id
@@ -121,14 +190,79 @@ class IngestPipeline:
             created_at=created_at,
             ceiling_usd=ceiling_usd,
             total_estimated_usd=total,
-            items=items,
+            items=tuple(items),
+            empty_chain_outcomes=tuple(empty_chain_outcomes),
         )
+
+    def _resolve_zero_dte(
+        self,
+        pull: DayPull,
+        resolver: ChainResolver,
+    ) -> tuple[DayPull | None, float]:
+        """Enumerate the day's 0DTE chain and land the definition CSV for audit.
+
+        Returns the pull with the enumerated raw symbols filled in, or None when
+        no contract expires that day. The float is the definition-download
+        estimate: real spend even when the chain turns out empty.
+        """
+
+        definitions = spxw_definitions_pull(pull.day)
+        estimate = self._gateway.estimate_cost(definitions)
+        symbols = resolver.resolve(pull.day)
+        self._land_definitions(definitions, resolver.definitions_payload(pull.day), estimate)
+        if not symbols:
+            return None, estimate
+        return replace(pull, symbols=symbols), estimate
+
+    def _land_definitions(self, pull: DayPull, payload: bytes, estimated_usd: float) -> None:
+        """Land the definition CSV used for enumeration as its own PIT batch."""
+
+        key = pull.logical_key
+        if self._pit_ledger.find(key) is not None:
+            return
+        landed_at = datetime.now(UTC)
+        published_at = datetime.combine(pull.day, time(23, 59, 59), tzinfo=NEW_YORK).astimezone(
+            UTC
+        )
+        if published_at > landed_at:
+            return  # the PIT invariant forbids landing before the day closes
+        receipt = self._landing.land(
+            provider=PROVIDER,
+            dataset=pull.dataset,
+            logical_key=key,
+            published_at=published_at,
+            first_seen_at=landed_at,
+            payload=SensitivePayload(payload),
+            content_type=DEFINITIONS_CONTENT_TYPE,
+            principal=LANDING_PRINCIPAL,
+            purpose=LANDING_PURPOSE,
+        )
+        record = PointInTimeRecord.create(
+            logical_key=key,
+            published_at=published_at,
+            first_seen_at=landed_at,
+            provider=PROVIDER,
+            provider_version=PROVIDER_VERSION,
+            schema_version=pull.schema,
+            content={
+                "dataset": pull.dataset,
+                "schema": pull.schema,
+                "day": pull.day.isoformat(),
+                "scope": pull.scope,
+                "object_key": receipt.object_key,
+                "plaintext_sha256": receipt.plaintext_sha256,
+                "record_count": max(len(payload.decode("utf-8").splitlines()) - 1, 0),
+                "estimated_usd": estimated_usd,
+            },
+        )
+        self._pit_ledger.append(record)
 
     def run(self, plan: PullPlan) -> PullReport:
         started_at = datetime.now(UTC)
         outcomes: list[DayOutcome] = []
         for item in plan.items:
             outcomes.append(self._run_day(item.pull, item.estimated_usd))
+        outcomes.extend(plan.empty_chain_outcomes)
         report = PullReport(
             plan_id=plan.plan_id,
             started_at=started_at,

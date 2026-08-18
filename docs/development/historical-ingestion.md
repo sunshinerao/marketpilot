@@ -36,12 +36,14 @@ coarse, a targeted trades pull is a separate, costed decision.
   listed expiration); single-contract cbbo-1m ≈ $0.00003/day; per-day chain
   enumeration via the `definition` schema ≈ $0.034/day; ES continuous ohlcv-1m
   ≈ $0.005/day.
-- **Strategy decision required before WP6**: whole-parent pulls exceed the new-user
-  credit; the intended "full 0DTE chain" (all strikes of that day's expiration,
-  optionally plus front weeklies) needs per-day enumeration via `definition` and
-  costs ≈ $15–18 for 12 months including enumeration. The CLI defaults to the
-  whole-parent selection so the cost gate forces this conversation with real
-  numbers instead of silently spending.
+- **Strategy**: the owner-approved 0DTE enumeration strategy is implemented and
+  is the CLI default (`--strategy 0dte`): each day's chain is enumerated from
+  the `definition` schema (live-verified `expiration` column; a 680-contract
+  0DTE chain was enumerated for 2026-08-14) and only those contracts are pulled
+  as `raw_symbol` batches. Whole-parent remains available via
+  `--strategy whole-chain`. Note that `ingest-plan` in 0dte mode downloads the
+  per-day definition CSVs (~$0.034/day) to enumerate; they land as auditable
+  PIT batches, so planning is not free but is accounted and idempotent.
 - **Hard ceiling**: every pull must call `metadata.get_cost` first, record the
   estimate in the hash-chained cost ledger (`APPROVED`/`BLOCKED`), and abort when
   the plan total exceeds the configured ceiling (`DATABENTO_MAX_COST_USD`,
@@ -124,15 +126,17 @@ data/derived/pit/batch-records.jsonl   # gitignored; normalized PIT batch record
 - [x] WP5 — Integrity audit: gap report and calendar reconciliation
   (`ingest/audit.py`, `marketpilot ingest-audit`). Hash-stability re-pull
   verification rides on content-addressed landing idempotency.
-- [ ] WP6 — First calibration pull (12-month window). **Requires owner
-  approval: spends part of the Databento free credit.** The default
-  whole-parent strategy estimates ≈ $267 for 12 months and will trip the
-  default ceiling; see §3 for the strategy decision.
-  Progress 2026-08-18: one-week validation pull (2026-08-10…14) completed —
-  10/10 batches landed (≈ $9.90 actual), both scopes pass `ingest-audit`,
-  decryption round-trip verified (SPXW 2026-08-14: 524 MB DBN, 6,855,358
-  rows, SHA-256 matches receipt). Remaining: choose the 12-month strategy
-  (0DTE enumeration vs shortened whole-chain) and run it.
+- [x] WP6a — 0DTE chain enumeration strategy (default): per-day `definition`
+  CSV enumeration with audit-landed definitions, POST form-body metadata calls
+  (live-verified 414 fix for long symbol lists), `EMPTY_CHAIN` days cost nothing
+  beyond enumeration, and already-landed days skip re-enumeration.
+- [ ] WP6 — First calibration pull (12-month window, `--strategy 0dte`).
+  **Requires owner approval: spends part of the Databento free credit.**
+  Progress 2026-08-18: one-week whole-parent validation pull (2026-08-10…14)
+  completed — 10/10 batches landed (≈ $9.90 actual), both scopes pass
+  `ingest-audit`, decryption round-trip verified (SPXW 2026-08-14: 524 MB DBN,
+  6,855,358 rows, SHA-256 matches receipt). Remaining: run `ingest-plan
+  --start … --end …` for the 12-month 0dte estimate, then approve the run.
 
 ## 9. Review questions for the owner
 
