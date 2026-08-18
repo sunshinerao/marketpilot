@@ -2,12 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from marketpilot.domain.point_in_time import (
     PointInTimeError,
     PointInTimeRecord,
     ReplayManifest,
 )
+
+
+class ReplayVisibility(StrEnum):
+    """Which availability fact gates a record's visibility in a replay.
+
+    OBSERVED uses `first_seen_at` (what this system actually knew) — correct for
+    live-collected data. AVAILABLE uses `published_at` (when the data could have
+    been known) — correct for backtests over licensed backfilled history, where
+    the bulk pull time would otherwise hide everything before the pull.
+    """
+
+    OBSERVED = "OBSERVED"
+    AVAILABLE = "AVAILABLE"
 
 
 class PointInTimeLedger:
@@ -42,12 +56,22 @@ class VirtualReplayClock:
             raise PointInTimeError("as_of must be timezone-aware")
         return value.astimezone(UTC)
 
-    def visible_records(self, as_of: datetime) -> tuple[PointInTimeRecord, ...]:
+    def visible_records(
+        self,
+        as_of: datetime,
+        *,
+        visibility: ReplayVisibility = ReplayVisibility.OBSERVED,
+    ) -> tuple[PointInTimeRecord, ...]:
         replay_time = self._as_of(as_of)
         latest: dict[str, PointInTimeRecord] = {}
         for record in self._ledger.records():
             record.verify()
-            if record.first_seen_at > replay_time:
+            visible_at = (
+                record.first_seen_at
+                if visibility is ReplayVisibility.OBSERVED
+                else record.published_at
+            )
+            if visible_at > replay_time:
                 continue
             if record.published_at > record.first_seen_at:
                 raise PointInTimeError(

@@ -4,15 +4,38 @@ import argparse
 import json
 import os
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from marketpilot.adapters.databento import (
+    DatabentoHistoricalGateway,
+    DatabentoSettings,
+    DayPull,
+)
 from marketpilot.adapters.webull import WebullCapabilityProbe, WebullSettings
 from marketpilot.domain.market import DataQuality
 from marketpilot.domain.readiness import ReadinessManifest, ShadowSession
+from marketpilot.ingest.audit import audit_window
+from marketpilot.ingest.calendar import load_equity_calendar, trading_days
+from marketpilot.ingest.cost_ledger import CostLedger
+from marketpilot.ingest.local_landing import (
+    FilesystemEncryptedObjectStore,
+    JsonlLandingMetadataSink,
+    LocalAesGcmCipher,
+    StaticLandingAuthorizer,
+)
+from marketpilot.ingest.pipeline import (
+    LANDING_PRINCIPAL,
+    LANDING_PURPOSE,
+    DayStatus,
+    IngestCostCeilingExceeded,
+    IngestPipeline,
+)
+from marketpilot.ingest.pit_ledger import PitBatchLedger
 from marketpilot.services.capability_store import CapabilityReportStore
+from marketpilot.services.raw_landing import LicensedPayloadLandingService
 from marketpilot.services.readiness import (
     ReadinessEvidenceError,
     ShadowLedger,
@@ -70,6 +93,31 @@ def _parser() -> argparse.ArgumentParser:
     )
     shadow.add_argument("--ledger", default="data/readiness/shadow-sessions.jsonl")
     shadow.add_argument("--session-file", required=True)
+    for name, helptext in (
+        ("ingest-plan", "Estimate a licensed history pull without downloading"),
+        ("ingest-run", "Execute a licensed history pull (spends the data budget)"),
+    ):
+        ingest = commands.add_parser(name, help=helptext)
+        ingest.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+        ingest.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+        ingest.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
+        ingest.add_argument("--max-cost", type=float, default=None)
+        ingest.add_argument("--data-root", default="data/raw")
+        ingest.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    commands.choices["ingest-run"].add_argument(
+        "--confirm-spend",
+        action="store_true",
+        help="explicit owner approval to spend the estimated data budget",
+    )
+    ingest_audit = commands.add_parser(
+        "ingest-audit",
+        help="Reconcile landed batches against the trading calendar",
+    )
+    ingest_audit.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    ingest_audit.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    ingest_audit.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
+    ingest_audit.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    ingest_audit.add_argument("--scope", default="spxw-whole-chain")
     return parser
 
 
@@ -146,6 +194,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             "execution_enabled=false"
         )
         return 0
+    if args.command in {"ingest-plan", "ingest-run"}:
+        return _ingest(args)
+    if args.command == "ingest-audit":
+        ingest_report = audit_window(
+            PitBatchLedger(args.pit_ledger),
+            load_equity_calendar(args.calendar),
+            scope=args.scope,
+            start=date.fromisoformat(args.start),
+            end=date.fromisoformat(args.end),
+        )
+        print(
+            json.dumps(
+                {
+                    "status": "PASS" if ingest_report.ok else "FAIL",
+                    "scope": ingest_report.scope,
+                    "expected_trading_days": ingest_report.expected_trading_days,
+                    "recorded_days": ingest_report.recorded_days,
+                    "missing_trading_days": [
+                        day.isoformat() for day in ingest_report.missing_trading_days
+                    ],
+                    "corrupt_records": ingest_report.corrupt_records,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if ingest_report.ok else 2
     if args.command == "readiness-check":
         try:
             manifest = load_readiness_manifest(args.manifest)
@@ -174,6 +248,110 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(report.model_dump_json(indent=2))
         return 0 if report.shadow_admission_ready else 2
     return 2
+
+
+def _default_pulls(days: Sequence[date]) -> list[DayPull]:
+    pulls: list[DayPull] = []
+    for day in days:
+        pulls.append(
+            DayPull(
+                dataset="OPRA.PILLAR",
+                schema="cbbo-1m",
+                day=day,
+                stype_in="parent",
+                symbols=("SPXW.OPT",),
+                scope="spxw-whole-chain",
+            )
+        )
+        pulls.append(
+            DayPull(
+                dataset="GLBX.MDP3",
+                schema="ohlcv-1m",
+                day=day,
+                stype_in="continuous",
+                symbols=("ES.v.0",),
+                scope="es-front-month",
+            )
+        )
+    return pulls
+
+
+def _landing_service(data_root: str) -> LicensedPayloadLandingService:
+    root = Path(data_root)
+    return LicensedPayloadLandingService(
+        authorizer=StaticLandingAuthorizer(
+            frozenset({(LANDING_PRINCIPAL, LANDING_PURPOSE)})
+        ),
+        cipher=LocalAesGcmCipher(root / "_keys" / "local-aesgcm-v1.key"),
+        object_store=FilesystemEncryptedObjectStore(root),
+        metadata_sink=JsonlLandingMetadataSink(root / "_meta" / "receipts.jsonl"),
+    )
+
+
+def _ingest(args: argparse.Namespace) -> int:
+    settings = DatabentoSettings()
+    if not settings.has_credentials:
+        print("status=FAIL reason=DATABENTO_API_KEY is required")
+        return 2
+    calendar = load_equity_calendar(args.calendar)
+    days = trading_days(
+        calendar,
+        date.fromisoformat(args.start),
+        date.fromisoformat(args.end),
+    )
+    if not days:
+        print("status=FAIL reason=no verified trading days in window")
+        return 2
+    ceiling = args.max_cost if args.max_cost is not None else settings.max_cost_usd
+    pipeline = IngestPipeline(
+        gateway=DatabentoHistoricalGateway(settings),
+        landing=_landing_service(args.data_root),
+        pit_ledger=PitBatchLedger(args.pit_ledger),
+        cost_ledger=CostLedger(Path(args.data_root) / "_meta" / "cost-ledger.jsonl"),
+    )
+    try:
+        plan = pipeline.build_plan(_default_pulls(days), ceiling_usd=ceiling)
+    except IngestCostCeilingExceeded as exc:
+        print(
+            json.dumps(
+                {"status": "BLOCKED", "reason": str(exc), "execution_enabled": False},
+                sort_keys=True,
+            )
+        )
+        return 2
+    if args.command == "ingest-plan":
+        print(
+            json.dumps(
+                {
+                    "status": "PLAN",
+                    "plan_id": plan.plan_id,
+                    "trading_days": len(days),
+                    "batches": len(plan.items),
+                    "total_estimated_usd": plan.total_estimated_usd,
+                    "ceiling_usd": plan.ceiling_usd,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if not args.confirm_spend:
+        print("status=FAIL reason=ingest-run requires --confirm-spend (owner approval)")
+        return 2
+    report = pipeline.run(plan)
+    print(
+        json.dumps(
+            {
+                "status": "COMPLETE",
+                "plan_id": report.plan_id,
+                "landed": report.count(DayStatus.LANDED),
+                "skipped_present": report.count(DayStatus.SKIPPED_PRESENT),
+                "not_due": report.count(DayStatus.NOT_DUE),
+                "gaps": report.count(DayStatus.GAP),
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":
