@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
@@ -251,6 +251,17 @@ def _latency(elapsed_ms: float) -> LatencySummary:
     return LatencySummary(samples=1, p50_ms=rounded, p95_ms=rounded, p99_ms=rounded)
 
 
+def _percentile(values: list[float], quantile: float) -> float:
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 2)
+    rank = quantile * (len(ordered) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = rank - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 2)
+
+
 class WebullCapabilityProbe:
     def __init__(
         self,
@@ -260,7 +271,9 @@ class WebullCapabilityProbe:
         self._settings = settings
         self._gateway_factory = gateway_factory
 
-    def run(self) -> CapabilityReport:
+    def run(self, *, samples: int = 1, interval_seconds: float = 0.0) -> CapabilityReport:
+        if samples < 1:
+            raise ValueError("samples must be at least 1")
         checked_at = datetime.now(UTC)
         results: list[CapabilityResult] = []
         if not self._settings.has_credentials:
@@ -334,12 +347,82 @@ class WebullCapabilityProbe:
                 self._skipped("spxw_option_history_m1", "WEBULL_SPXW_OPTION_SYMBOL is not set")
             )
 
-        results.extend(self._execute(item) for item in definitions)
+        results.extend(
+            self._execute_sampled(
+                definitions,
+                samples=samples,
+                interval_seconds=interval_seconds,
+            )
+        )
         results.sort(key=lambda item: item.capability_id)
         return self._report(
             checked_at,
             results,
             coverage_findings=self._coverage_findings(gateway),
+        )
+
+    @staticmethod
+    def _execute_sampled(
+        definitions: list[_ProbeDefinition],
+        *,
+        samples: int,
+        interval_seconds: float,
+    ) -> list[CapabilityResult]:
+        """Run every definition once per round and aggregate per capability.
+
+        Rounds interleave definitions so a rate limit or outage shows up as a
+        partial-round failure instead of a burst against one endpoint.
+        """
+
+        attempts: dict[str, list[CapabilityResult]] = {
+            definition.capability_id: [] for definition in definitions
+        }
+        for round_index in range(samples):
+            for definition in definitions:
+                attempts[definition.capability_id].append(
+                    WebullCapabilityProbe._execute(definition)
+                )
+            if round_index < samples - 1 and interval_seconds > 0:
+                sleep(interval_seconds)
+        return [
+            WebullCapabilityProbe._aggregate(capability_id, capability_attempts)
+            for capability_id, capability_attempts in attempts.items()
+        ]
+
+    @staticmethod
+    def _aggregate(
+        capability_id: str,
+        attempts: list[CapabilityResult],
+    ) -> CapabilityResult:
+        if len(attempts) == 1:
+            return attempts[0]
+        last = attempts[-1]
+        if any(attempt.status is CapabilityStatus.ERROR for attempt in attempts):
+            status = CapabilityStatus.ERROR
+        elif any(attempt.status is CapabilityStatus.FAIL for attempt in attempts):
+            status = CapabilityStatus.FAIL
+        else:
+            status = CapabilityStatus.PASS
+        passed = sum(attempt.status is CapabilityStatus.PASS for attempt in attempts)
+        latencies = [
+            attempt.latency.p50_ms
+            for attempt in attempts
+            if attempt.latency.p50_ms is not None
+        ]
+        latency = LatencySummary(
+            samples=len(latencies),
+            p50_ms=_percentile(latencies, 0.50) if latencies else None,
+            p95_ms=_percentile(latencies, 0.95) if latencies else None,
+            p99_ms=_percentile(latencies, 0.99) if latencies else None,
+        )
+        return CapabilityResult(
+            capability_id=capability_id,
+            status=status,
+            checked_at=last.checked_at,
+            message=f"{passed}/{len(attempts)} sampled rounds passed",
+            http_status=last.http_status,
+            latency=latency,
+            field_paths=last.field_paths,
         )
 
     def _coverage_findings(self, gateway: WebullGateway) -> tuple[CoverageFinding, ...]:

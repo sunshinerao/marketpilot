@@ -245,6 +245,59 @@ def test_sdk_gateway_constructor_configuration(
     assert captured["token_dir"] == "data/webull-token"
 
 
+def test_multi_sample_probe_aggregates_latency_rounds() -> None:
+    class CountingGateway(FakeGateway):
+        calls = 0
+
+        def futures_snapshot(self, symbol: str) -> PayloadEnvelope:
+            type(self).calls += 1
+            return super().futures_snapshot(symbol)
+
+    report = WebullCapabilityProbe(
+        configured_settings(),
+        lambda _: CountingGateway(),
+    ).run(samples=3, interval_seconds=0)
+
+    assert CountingGateway.calls == 3
+    snapshot = next(item for item in report.results if item.capability_id == "es_snapshot")
+    assert snapshot.status is CapabilityStatus.PASS
+    assert snapshot.message == "3/3 sampled rounds passed"
+    assert snapshot.latency.samples == 3
+    assert snapshot.latency.p50_ms is not None
+    assert snapshot.latency.p95_ms is not None
+    assert snapshot.latency.p99_ms is not None
+    assert snapshot.latency.p50_ms <= snapshot.latency.p95_ms <= snapshot.latency.p99_ms
+    assert report.quality is DataQuality.GREEN
+
+
+def test_multi_sample_probe_marks_partial_round_failure() -> None:
+    class FlakyGateway(FakeGateway):
+        calls = 0
+
+        def option_snapshot(self, symbol: str) -> PayloadEnvelope:
+            type(self).calls += 1
+            if type(self).calls == 2:
+                return PayloadEnvelope(status_code=500, payload=None)
+            return super().option_snapshot(symbol)
+
+    report = WebullCapabilityProbe(
+        configured_settings(),
+        lambda _: FlakyGateway(),
+    ).run(samples=3, interval_seconds=0)
+
+    snapshot = next(
+        item for item in report.results if item.capability_id == "spxw_option_snapshot"
+    )
+    assert snapshot.status is CapabilityStatus.FAIL
+    assert snapshot.message == "2/3 sampled rounds passed"
+    assert report.quality is DataQuality.RED
+
+
+def test_probe_rejects_zero_samples() -> None:
+    with pytest.raises(ValueError, match="samples must be at least 1"):
+        WebullCapabilityProbe(configured_settings(), lambda _: FakeGateway()).run(samples=0)
+
+
 def test_sdk_gateway_silences_webull_logger_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

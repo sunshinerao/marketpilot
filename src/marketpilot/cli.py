@@ -28,6 +28,18 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     probe = commands.add_parser("probe-webull", help="Run a redacted Webull capability probe")
     probe.add_argument("--output-dir", default="data/capability-probes")
+    probe.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="Sampled rounds per probe for latency distributions (default: 1)",
+    )
+    probe.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=20.0,
+        help="Pause between sampled rounds (default: 20)",
+    )
     audit = commands.add_parser("audit-check", help="Verify the local SQLite audit store")
     audit.add_argument(
         "--database",
@@ -64,7 +76,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "probe-webull":
-        capability_report = WebullCapabilityProbe(WebullSettings()).run()
+        if args.samples < 1:
+            print("status=FAIL reason=--samples must be at least 1")
+            return 2
+        capability_report = WebullCapabilityProbe(WebullSettings()).run(
+            samples=args.samples,
+            interval_seconds=args.interval_seconds,
+        )
         destination = CapabilityReportStore(args.output_dir).save(capability_report)
         passed = sum(item.status == "PASS" for item in capability_report.results)
         print(

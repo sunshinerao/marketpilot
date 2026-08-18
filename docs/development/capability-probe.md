@@ -27,9 +27,11 @@ require `WEBULL_SPXW_OPTION_SYMBOL`; discovery can be narrowed with
 
 The persisted report contains only status, HTTP status, latency summaries, and observed
 JSON field paths. Raw values and provider exception messages are intentionally omitted.
-One request currently produces a one-sample P50/P95/P99 baseline; production readiness
-requires scheduled multi-sample measurements, reconnect tests, entitlement evidence,
-and timestamp-semantic review.
+`marketpilot probe-webull --samples N --interval-seconds S` runs N interleaved rounds
+per probe and aggregates P50/P95/P99 latencies; a round that fails marks the capability
+failed even when other rounds pass. Production readiness still requires scheduled
+runs across market phases (pre-open, open, midday, close), reconnect tests,
+entitlement evidence, and timestamp-semantic review.
 
 `quality=GREEN` in this report means only that every configured probe call returned a
 non-empty success response. The report remains `verification_status=SCHEMA_ONLY` and
