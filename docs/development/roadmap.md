@@ -104,9 +104,10 @@ Automated order submission is outside the current authorization boundary.
 Per ADR 0003, detectors emit evidence-bounded candidates, never decisions. Ordered
 by data availability; a detector starts only after its calibration data exists.
 
-- [ ] ScoutPilot plugin contract: versioned detector interface, candidate schema
+- [x] ScoutPilot plugin contract: versioned detector interface, candidate schema
   (target, direction, evidence, confidence, invalidation, next checkpoint), and
-  universe declaration.
+  universe declaration (`domain/scout.py`; inferred kinds must declare an
+  estimate method).
 - [ ] Daily point-in-time collection into the immutable store, starting before any
   detector: SPXW chain snapshots via the verified Webull OPRA legs; VIX complex
   once an index source is licensed (Phase 1).
