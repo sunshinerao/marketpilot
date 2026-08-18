@@ -128,6 +128,11 @@ data/derived/pit/batch-records.jsonl   # gitignored; normalized PIT batch record
   approval: spends part of the Databento free credit.** The default
   whole-parent strategy estimates ≈ $267 for 12 months and will trip the
   default ceiling; see §3 for the strategy decision.
+  Progress 2026-08-18: one-week validation pull (2026-08-10…14) completed —
+  10/10 batches landed (≈ $9.90 actual), both scopes pass `ingest-audit`,
+  decryption round-trip verified (SPXW 2026-08-14: 524 MB DBN, 6,855,358
+  rows, SHA-256 matches receipt). Remaining: choose the 12-month strategy
+  (0DTE enumeration vs shortened whole-chain) and run it.
 
 ## 9. Review questions for the owner
 
