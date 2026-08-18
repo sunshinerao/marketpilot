@@ -160,6 +160,35 @@ def test_failed_download_becomes_a_gap_and_run_continues(tmp_path: Path) -> None
     assert not audit.ok
 
 
+def test_run_report_persists_outcomes(tmp_path: Path) -> None:
+    import json
+
+    gateway = FakeGateway()
+    root = tmp_path / "raw"
+    report_path = root / "_meta" / "pull-reports.jsonl"
+    landing = LicensedPayloadLandingService(
+        authorizer=StaticLandingAuthorizer(frozenset({(LANDING_PRINCIPAL, LANDING_PURPOSE)})),
+        cipher=LocalAesGcmCipher(root / "_keys" / "k.key"),
+        object_store=FilesystemEncryptedObjectStore(root),
+        metadata_sink=JsonlLandingMetadataSink(root / "_meta" / "receipts.jsonl"),
+    )
+    pipeline = IngestPipeline(
+        gateway=gateway,
+        landing=landing,
+        pit_ledger=PitBatchLedger(tmp_path / "pit" / "records.jsonl"),
+        cost_ledger=CostLedger(root / "_meta" / "cost.jsonl"),
+        report_path=report_path,
+    )
+    plan = pipeline.build_plan([spec_pull(day) for day in window_days()], ceiling_usd=25.0)
+    pipeline.run(plan)
+
+    lines = report_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["plan_id"] == plan.plan_id
+    assert all(outcome["status"] == "LANDED" for outcome in record["outcomes"])
+
+
 def test_manifest_covers_only_records_visible_as_of(tmp_path: Path) -> None:
     gateway = FakeGateway()
     pipeline = build_pipeline(tmp_path, gateway)

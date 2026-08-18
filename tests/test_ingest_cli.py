@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from marketpilot.cli import _default_pulls, _landing_service, main
+
+WINDOW = ["--start", "2026-08-14", "--end", "2026-08-17"]
+
+
+def test_ingest_plan_requires_credentials(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("DATABENTO_API_KEY", raising=False)
+    assert main(["ingest-plan", *WINDOW]) == 2
+    assert "DATABENTO_API_KEY" in capsys.readouterr().out
+
+
+def test_ingest_run_refuses_without_confirm_spend(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    # Refusal happens before any provider call, including cost estimation.
+    assert main(["ingest-run", *WINDOW]) == 2
+    assert "confirm-spend" in capsys.readouterr().out
+
+
+def test_ingest_plan_rejects_window_without_trading_days(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    # 2026-08-15/16 is a weekend.
+    assert main(["ingest-plan", "--start", "2026-08-15", "--end", "2026-08-16"]) == 2
+    assert "no verified trading days" in capsys.readouterr().out
+
+
+def test_ingest_audit_reports_missing_days(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        [
+            "ingest-audit",
+            *WINDOW,
+            "--pit-ledger",
+            str(tmp_path / "empty.jsonl"),
+        ]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert out["status"] == "FAIL"
+    assert out["expected_trading_days"] == 2
+    assert out["missing_trading_days"] == ["2026-08-14", "2026-08-17"]
+
+
+def test_default_pulls_cover_chain_and_front_month() -> None:
+    from datetime import date
+
+    pulls = _default_pulls([date(2026, 8, 17)])
+    assert len(pulls) == 2
+    by_dataset = {pull.dataset: pull for pull in pulls}
+    assert by_dataset["OPRA.PILLAR"].symbols == ("SPXW.OPT",)
+    assert by_dataset["OPRA.PILLAR"].stype_in == "parent"
+    assert by_dataset["GLBX.MDP3"].symbols == ("ES.v.0",)
+    assert by_dataset["GLBX.MDP3"].stype_in == "continuous"
+
+
+def test_landing_service_constructs_with_local_key(tmp_path: Path) -> None:
+    service = _landing_service(str(tmp_path / "raw"))
+    assert service is not None
+    key_file = tmp_path / "raw" / "_keys" / "local-aesgcm-v1.key"
+    assert key_file.exists()
+    assert oct(key_file.stat().st_mode & 0o777) == "0o600"

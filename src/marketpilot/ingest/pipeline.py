@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from enum import StrEnum
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from marketpilot.adapters.databento import DatabentoApiError, DayPull, HistoricalGateway
@@ -73,11 +75,13 @@ class IngestPipeline:
         landing: LicensedPayloadLandingService,
         pit_ledger: PitBatchLedger,
         cost_ledger: CostLedger,
+        report_path: Path | None = None,
     ) -> None:
         self._gateway = gateway
         self._landing = landing
         self._pit_ledger = pit_ledger
         self._cost_ledger = cost_ledger
+        self._report_path = report_path
 
     def build_plan(
         self,
@@ -125,12 +129,41 @@ class IngestPipeline:
         outcomes: list[DayOutcome] = []
         for item in plan.items:
             outcomes.append(self._run_day(item.pull, item.estimated_usd))
-        return PullReport(
+        report = PullReport(
             plan_id=plan.plan_id,
             started_at=started_at,
             finished_at=datetime.now(UTC),
             outcomes=tuple(outcomes),
         )
+        self._persist_report(report)
+        return report
+
+    def _persist_report(self, report: PullReport) -> None:
+        """Append the run outcome, including per-day gap reasons, to JSONL."""
+
+        if self._report_path is None:
+            return
+        self._report_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._report_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "plan_id": report.plan_id,
+                        "started_at": report.started_at.isoformat(),
+                        "finished_at": report.finished_at.isoformat(),
+                        "outcomes": [
+                            {
+                                "logical_key": outcome.logical_key,
+                                "status": outcome.status.value,
+                                "detail": outcome.detail,
+                            }
+                            for outcome in report.outcomes
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
 
     def _run_day(self, pull: DayPull, estimated_usd: float) -> DayOutcome:
         key = pull.logical_key

@@ -303,12 +303,17 @@ def _ingest(args: argparse.Namespace) -> int:
     if not days:
         print("status=FAIL reason=no verified trading days in window")
         return 2
+    if args.command == "ingest-run" and not args.confirm_spend:
+        # Refuse before even estimating: execution requires explicit owner approval.
+        print("status=FAIL reason=ingest-run requires --confirm-spend (owner approval)")
+        return 2
     ceiling = args.max_cost if args.max_cost is not None else settings.max_cost_usd
     pipeline = IngestPipeline(
         gateway=DatabentoHistoricalGateway(settings),
         landing=_landing_service(args.data_root),
         pit_ledger=PitBatchLedger(args.pit_ledger),
         cost_ledger=CostLedger(Path(args.data_root) / "_meta" / "cost-ledger.jsonl"),
+        report_path=Path(args.data_root) / "_meta" / "pull-reports.jsonl",
     )
     try:
         plan = pipeline.build_plan(_default_pulls(days), ceiling_usd=ceiling)
@@ -347,9 +352,6 @@ def _ingest(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    if not args.confirm_spend:
-        print("status=FAIL reason=ingest-run requires --confirm-spend (owner approval)")
-        return 2
     report = pipeline.run(plan)
     print(
         json.dumps(

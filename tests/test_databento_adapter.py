@@ -88,6 +88,13 @@ def test_download_day_returns_bytes_and_empty_payload_is_an_error() -> None:
         gateway(empty).download_day(pull())
 
 
+def test_streamed_large_response_with_206_is_accepted() -> None:
+    session = FakeSession()
+    session.download = FakeResponse(206, content=b"partial-content-stream")
+
+    assert gateway(session).download_day(pull()) == b"partial-content-stream"
+
+
 def test_api_error_is_reduced_to_status_and_case() -> None:
     session = FakeSession()
     session.cost_response = None

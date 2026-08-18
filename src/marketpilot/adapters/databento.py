@@ -109,7 +109,8 @@ class DatabentoHistoricalGateway:
         }
 
     def _checked(self, response: Any) -> Any:
-        if response.status_code != 200:
+        # Databento streams large query results as 206 Partial Content.
+        if response.status_code not in (200, 206):
             case = "unknown"
             try:
                 detail = response.json().get("detail", {})
