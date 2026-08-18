@@ -12,6 +12,24 @@
 
 ---
 
+## 0. 2026-08-18 实测验证（免费账户）
+
+以下结论来自免费档账户的实测调用，替代原先的推测：
+
+| 验证项 | 结果 |
+|---|---|
+| Massive `I:VIX1D` | ✅ 存在且 active（"Cboe 1 Day Volatility Index"）；`I:SPX` 同样确认 |
+| Massive SPXW 合约覆盖 | ✅ 直接查询 `O:SPXW260818C07775000` 成功；**注意 SPXW 合约挂在 `underlying_ticker=SPX` 下**（用 SPXW 查询返回空） |
+| Massive short interest 历史起点 | ✅ 实测 2017-12-29（AAPL，免费档即可查） |
+| Databento key / 历史 API | ✅ 可用，目录 29 个数据集 |
+| Databento OPRA cbbo-1m 成本 | 单合约单日 ≈ $0.000032 → **SPXW 全链（约千级合约）单日 ≈ $0.03，三年 ≈ $25**，$125 免费额度足够首轮回测拉取 |
+| Databento ES 成本 | 分钟线（ohlcv-1m）单日 ≈ $0.005；逐笔 trades 单日 ≈ $0.34 |
+| Databento CGIF 指数数据集 | 🟡 目录中存在 `MAIN.CGIF`/`CGI.CGIF` 等（Cboe Global Indices Feed 渠道，可能含 SPX/VIX 指数），但**免费账户无权限**（schemas 为空、range 404）；定价与开通条件需询价——这是对 2.1 节"Databento 无任何指数点位数据集"的修正：数据集存在，获取门槛未决 |
+
+未决项 #1、#11 关闭。新增未决项：CGIF 指数数据集的订阅价格与是否面向个人开放。
+
+---
+
 ## 1. 需求矩阵（5 需求 × 来源）
 
 | 需求 | Databento | Massive (原 Polygon.io) | Cboe DataShop / Cboe 直接 |
