@@ -1,5 +1,7 @@
 .DS_Store
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -21,6 +23,7 @@ data/derived/
 *.log
 data/capability-probes/
 data/audit/
+data/webull-token/
 .playwright-cli/
 output/postgres-restore-drill/
 output/playwright/

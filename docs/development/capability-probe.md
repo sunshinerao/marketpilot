@@ -36,6 +36,20 @@ non-empty success response. The report remains `verification_status=SCHEMA_ONLY`
 `production_ready=false`; MarketPilot therefore downgrades it at the live decision gate
 and keeps `NO_TRADE`. Production readiness cannot be inferred from this automated probe.
 
+## Access token activation
+
+The SDK creates an access token during client initialization and polls until it
+becomes `NORMAL`. A freshly issued or rotated app credential commonly starts as
+`PENDING`; the probe bounds this wait (`WEBULL_TOKEN_CHECK_SECONDS`, default 65)
+instead of blocking for the SDK's 300-second default, then records the resulting
+downstream `401` responses as ordinary redacted failures.
+
+If the report shows a PENDING-then-401 pattern, check the developer portal before
+re-running: the app is activated/approved, any IP allowlist includes the probing
+host, and account verification is complete. The SDK caches the token on disk; the
+gateway pins that cache to the ignored `data/webull-token/` directory so the
+credential file never lands in the repository root.
+
 ## Coverage findings (report version 2)
 
 Since report version `2`, each run that reaches the SDK also records

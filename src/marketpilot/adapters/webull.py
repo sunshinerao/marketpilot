@@ -41,6 +41,14 @@ class WebullSettings(BaseSettings):
     spxw_expiration: str | None = None
     spxw_option_symbol: str | None = None
     token_dir: str | None = None
+    token_check_seconds: int = 65
+
+    @field_validator("token_check_seconds")
+    @classmethod
+    def require_positive_token_check(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WEBULL_TOKEN_CHECK_SECONDS must be positive")
+        return value
 
     @field_validator("es_contract")
     @classmethod
@@ -102,6 +110,10 @@ class WebullSdkGateway:
             settings.region,
             connect_timeout=5,
             timeout=10,
+            # A PENDING token is diagnostic evidence, not a reason to block the
+            # probe for the SDK default of 300 seconds.
+            token_check_duration_seconds=settings.token_check_seconds,
+            token_check_interval_seconds=5,
         )
         # The SDK dumps full request state — including the x-app-key credential
         # header — to its loggers when a call fails, and set_logger() rebinds the
@@ -119,8 +131,10 @@ class WebullSdkGateway:
         webull_logger.propagate = False
         if settings.api_endpoint:
             api_client.add_endpoint(settings.region, settings.api_endpoint)
-        if settings.token_dir:
-            api_client.set_token_dir(settings.token_dir)
+        # The SDK writes the access token to ./conf/token.txt relative to the
+        # working directory when no token dir is set. Keep that credential file
+        # inside an ignored data directory instead of the repository root.
+        api_client.set_token_dir(settings.token_dir or "data/webull-token")
         self._client = DataClient(api_client)
         # Entitlement evidence uses the read-only Account facade only. The
         # order-capable TradeClient is never constructed: MarketPilot has no

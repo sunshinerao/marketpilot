@@ -177,11 +177,16 @@ class _FakeSdkResponse:
 
 def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch, *, index_module: bool) -> None:
     class FakeApiClient:
+        captured: dict[str, object] = {}
+
         def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+            FakeApiClient.captured = dict(kwargs)
 
         def set_logger(self, logger: object) -> None:
             pass
+
+        def set_token_dir(self, token_dir: str) -> None:
+            FakeApiClient.captured["token_dir"] = token_dir
 
     class FakeDataClient:
         def __init__(self, api_client: object) -> None:
@@ -225,6 +230,19 @@ def test_sdk_gateway_reports_missing_index_module(
     gateway = WebullSdkGateway(configured_settings())
 
     assert gateway.supports_index_market_data() is False
+
+
+def test_sdk_gateway_constructor_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_sdk(monkeypatch, index_module=False)
+    WebullSdkGateway(configured_settings())
+
+    core_module = sys.modules["webull.core.client"]
+    captured = core_module.ApiClient.captured  # type: ignore[attr-defined]
+    assert captured["token_check_duration_seconds"] == 65
+    assert captured["token_check_interval_seconds"] == 5
+    assert captured["token_dir"] == "data/webull-token"
 
 
 def test_sdk_gateway_silences_webull_logger_tree(
