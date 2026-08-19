@@ -190,10 +190,12 @@ class DatabentoHistoricalGateway:
     def _network_guard(call: Callable[[], Any]) -> Any:
         """Transport failures become a structured case; tracebacks never leak.
 
-        Transient failures get two retries with short backoff; a persistent
-        failure surfaces once as `network_error`.
+        Transient transport errors and retryable statuses (429/5xx) get two
+        retries with short backoff; anything else surfaces once as a structured
+        DatabentoApiError.
         """
 
+        retryable_statuses = {0, 429, 500, 502, 503, 504}
         delays = (2.0, 5.0)
         for attempt in range(len(delays) + 1):
             if attempt:
@@ -203,6 +205,9 @@ class DatabentoHistoricalGateway:
             except requests.exceptions.RequestException:
                 if attempt == len(delays):
                     raise DatabentoApiError(0, "network_error") from None
+            except DatabentoApiError as exc:
+                if exc.status_code not in retryable_statuses or attempt == len(delays):
+                    raise
         raise DatabentoApiError(0, "network_error")
 
     def estimate_cost(self, pull: DayPull) -> float:
