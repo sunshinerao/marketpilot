@@ -175,6 +175,25 @@ def _parser() -> argparse.ArgumentParser:
     extract.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     extract.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
     extract.add_argument("--out", default="data/derived/labels/entry-features.jsonl")
+    distances = commands.add_parser(
+        "recommend-distances",
+        help="Emit per-day out-of-sample tail distances with an expanding window",
+    )
+    distances.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    distances.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    distances.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
+    distances.add_argument(
+        "--features", default="data/derived/labels/entry-features.jsonl"
+    )
+    distances.add_argument("--rules", default="config/rules-v1.toml")
+    distances.add_argument("--out", default="data/derived/labels/distances.jsonl")
+    distances.add_argument(
+        "--model",
+        choices=("iv-regime", "unconditional"),
+        default="iv-regime",
+    )
+    distances.add_argument("--quantile", type=float, default=0.975)
+    distances.add_argument("--min-train-days", type=int, default=60)
     return parser
 
 
@@ -382,6 +401,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "recommend-distances":
+        from marketpilot.validation.distance_recommender import recommend_walk_forward
+        from marketpilot.validation.tail_model import (
+            EntryFeatures,
+            ExcursionLabel,
+            IvRegimeTailModel,
+            UnconditionalTailModel,
+            load_tail_model_config,
+        )
+
+        excursion_labels = [
+            ExcursionLabel.from_mapping(json.loads(line))
+            for line in Path(args.labels).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        entry_features = [
+            EntryFeatures.from_mapping(json.loads(line))
+            for line in Path(args.features).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        config = load_tail_model_config(args.rules)
+        factory = (
+            (lambda: IvRegimeTailModel(config=config))
+            if args.model == "iv-regime"
+            else (lambda: UnconditionalTailModel(config=config))
+        )
+        distance_report = recommend_walk_forward(
+            labels=excursion_labels,
+            features=entry_features,
+            model_factory=factory,
+            quantile=args.quantile,
+            min_train_days=args.min_train_days,
+            out_path=Path(args.out),
+        )
+        print(json.dumps(distance_report.to_dict(), sort_keys=True))
         return 0
     if args.command == "readiness-check":
         try:
