@@ -32,6 +32,11 @@ from marketpilot.validation.promotion_gate import (
     evaluate_promotion_gate,
     load_promotion_criteria,
 )
+from marketpilot.validation.realized_excursions import (
+    ExcursionCoverageError,
+    ExcursionResult,
+    realized_excursion,
+)
 from marketpilot.validation.risk_economics import (
     ConservativeRiskContract,
     PnlScenario,
@@ -62,6 +67,8 @@ __all__ = [
     "ExecutedLeg",
     "ExecutionAssumptions",
     "ExecutionFailure",
+    "ExcursionCoverageError",
+    "ExcursionResult",
     "FrozenValidationReport",
     "LegNbbo",
     "PnlMarkQuotes",
@@ -89,6 +96,7 @@ __all__ = [
     "generate_outcome_labels",
     "load_promotion_criteria",
     "maximum_drawdown",
+    "realized_excursion",
     "value_opening_execution",
     "assess_entry_risk",
     "calibrate_joint_tail_corridor",
