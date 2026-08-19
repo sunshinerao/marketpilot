@@ -79,6 +79,9 @@ failure-injection tests.
 
 ## Phase 5 — strategy validation and controlled improvement
 
+- [x] Calibration spine design:
+  [calibration-pipeline.md](calibration-pipeline.md) (normalize → implied SPX →
+  outcome labels → tail model → walk-forward report).
 - [x] Purged walk-forward and event/regime-stratified evaluation contracts.
 - [x] Conservative NBBO/size/spread/slippage/fee, executable PnL, max-loss, EV, CVaR,
   and risk-budget contracts with fail-closed API.
