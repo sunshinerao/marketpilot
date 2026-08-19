@@ -32,9 +32,8 @@ class EntryFeatures:
         object.__setattr__(self, "entry_ts", self.entry_ts.astimezone(UTC))
         if self.implied_center <= 0:
             raise EntryFeaturesError("implied_center must be positive")
-        if self.atm_iv_valid:
-            if not 0 < self.atm_iv < 5:
-                raise EntryFeaturesError("atm_iv must be within (0, 5)")
+        if self.atm_iv_valid and not 0 < self.atm_iv < 5:
+            raise EntryFeaturesError("atm_iv must be within (0, 5)")
         if self.realized_vol_30m < 0:
             raise EntryFeaturesError("realized_vol_30m must not be negative")
         if self.median_spread < 0:
