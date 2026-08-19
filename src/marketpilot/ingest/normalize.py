@@ -56,10 +56,15 @@ def _ts_values(frame: pd.DataFrame, label: str) -> Any:
 
     ``databento.DBNStore.to_df`` indexes by ``ts_event``; hand-built frames in
     tests and future CSV decoders keep it as a column. Both are accepted.
+    Real cbbo-1m data carries NaT ``ts_event`` on rows without a trade event;
+    those fall back to the always-present ``ts_recv`` index.
     """
 
     if "ts_event" in frame.columns:
-        return frame["ts_event"]
+        series = frame["ts_event"]
+        if frame.index.name == "ts_recv":
+            series = series.fillna(frame.index.to_series())
+        return series
     if frame.index.name == "ts_event":
         return frame.index.to_series()
     raise NormalizeError(f"{label} frame has no ts_event column or index")

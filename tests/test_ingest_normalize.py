@@ -121,6 +121,24 @@ def test_nan_bid_and_ask_become_none() -> None:
     assert chain.quotes[0].ask is None
 
 
+def test_nat_ts_event_falls_back_to_ts_recv_index() -> None:
+    """Real cbbo-1m rows without a trade event carry NaT ts_event; the always-
+    present ts_recv index is the ordering key for them (live data, 2026-08-14)."""
+
+    cbbo = _cbbo_frame()
+    cbbo["ts_event"] = pd.NaT
+    cbbo = cbbo.set_index(
+        pd.DatetimeIndex(
+            [datetime(2026, 8, 17, 13, 30, tzinfo=UTC), datetime(2026, 8, 17, 13, 31, tzinfo=UTC)],
+            name="ts_recv",
+        )
+    )
+
+    chain = chain_day_from_frames(DAY, _es_frame(), cbbo)
+
+    assert [quote.ts.minute for quote in chain.quotes] == [30, 31]
+
+
 def test_unordered_rows_are_sorted_by_timestamp() -> None:
     chain = chain_day_from_frames(DAY, _es_frame(minutes=(2, 0, 1)), _cbbo_frame((1, 0)))
 
