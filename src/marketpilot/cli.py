@@ -148,6 +148,33 @@ def _parser() -> argparse.ArgumentParser:
     labels.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     labels.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
     labels.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
+    economics = commands.add_parser(
+        "evaluate-economics",
+        help="Conservative iron-condor economics: labels + tail distances + chains",
+    )
+    economics.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    economics.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    economics.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
+    economics.add_argument(
+        "--distances",
+        default="data/derived/tail-distances/distances.jsonl",
+        help="workstream-F TailDistances JSONL (records shaped as TailDistances only)",
+    )
+    economics.add_argument("--data-root", default="data/raw")
+    economics.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    extract = commands.add_parser(
+        "extract-features",
+        help="Compute entry-time chain features for labelled days",
+    )
+    extract.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    extract.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    extract.add_argument(
+        "--entry", default="09:45", help="entry time, ET wall clock (default 09:45)"
+    )
+    extract.add_argument("--data-root", default="data/raw")
+    extract.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    extract.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
+    extract.add_argument("--out", default="data/derived/labels/entry-features.jsonl")
     return parser
 
 
@@ -303,6 +330,54 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "start": start.isoformat(),
                     "end": end.isoformat(),
                     "counts": label_report.counts(),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "evaluate-economics":
+        from marketpilot.validation.condor_economics import run_economics_batch
+
+        try:
+            economics_report = run_economics_batch(
+                labels_path=args.labels,
+                distances_path=args.distances,
+                data_root=args.data_root,
+                pit_ledger_path=args.pit_ledger,
+                start=date.fromisoformat(args.start),
+                end=date.fromisoformat(args.end),
+            )
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
+            return 2
+        print(json.dumps(economics_report.to_dict(), sort_keys=True))
+        return 0
+    if args.command == "extract-features":
+        from marketpilot.features.entry_snapshot_batch import generate_entry_features
+
+        try:
+            entry_time_et = time.fromisoformat(args.entry)
+            feature_report = generate_entry_features(
+                start=date.fromisoformat(args.start),
+                end=date.fromisoformat(args.end),
+                data_root=args.data_root,
+                pit_ledger_path=args.pit_ledger,
+                labels_path=args.labels,
+                out_path=args.out,
+                entry_time_et=entry_time_et,
+            )
+        except ValueError as exc:
+            print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
+            return 2
+        print(
+            json.dumps(
+                {
+                    "status": "OK",
+                    "out": str(feature_report.out_path),
+                    "start": feature_report.start.isoformat(),
+                    "end": feature_report.end.isoformat(),
+                    "entry": entry_time_et.isoformat(),
+                    "counts": feature_report.counts(),
                 },
                 sort_keys=True,
             )
