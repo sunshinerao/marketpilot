@@ -14,8 +14,10 @@ from marketpilot.ingest.normalize import (
     NormalizeError,
     cbbo_logical_key,
     chain_day_from_frames,
+    es_bars_from_frame,
     es_logical_key,
     normalize_day,
+    normalize_es_day,
 )
 from marketpilot.ingest.peek import LandedBatch
 
@@ -242,3 +244,49 @@ def test_normalize_day_wires_batches_to_frames(
     assert isinstance(chain, ChainDay)
     assert len(chain.underlying_bars) == 2
     assert len(chain.quotes) == 2
+
+
+def test_es_bars_from_frame_returns_typed_bars() -> None:
+    bars = es_bars_from_frame(_es_frame(minutes=(1, 0)))
+
+    assert [bar.ts.minute for bar in bars] == [30, 31]  # sorted
+    assert bars[0].close == 6400.5
+
+
+def test_normalize_es_day_decodes_only_the_es_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaded_keys: list[str] = []
+
+    def fake_load(*, data_root: object, pit_ledger_path: object, logical_key: str) -> LandedBatch:
+        loaded_keys.append(logical_key)
+        return LandedBatch(logical_key=logical_key, payload=b"dbn", schema="ohlcv-1m")
+
+    class FakeStore:
+        def to_df(self) -> pd.DataFrame:
+            return _es_frame(as_index=True)
+
+    import databento
+
+    monkeypatch.setattr(normalize, "load_landed_batch", fake_load)
+    monkeypatch.setattr(databento.DBNStore, "from_bytes", staticmethod(lambda payload: FakeStore()))
+
+    bars = normalize_es_day(
+        data_root=tmp_path / "raw",
+        pit_ledger_path=tmp_path / "pit" / "records.jsonl",
+        day=DAY,
+    )
+
+    # The 0DTE chain batch is never touched on the ES-only path.
+    assert loaded_keys == [es_logical_key(DAY)]
+    assert len(bars) == 2
+    assert bars[0].close == 6400.5
+
+
+def test_normalize_es_day_missing_batch_raises_normalize_error(tmp_path: Path) -> None:
+    with pytest.raises(NormalizeError, match="missing landed batch"):
+        normalize_es_day(
+            data_root=tmp_path / "raw",
+            pit_ledger_path=tmp_path / "pit" / "records.jsonl",
+            day=DAY,
+        )

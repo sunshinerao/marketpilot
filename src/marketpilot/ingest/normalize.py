@@ -134,6 +134,17 @@ def _option_quotes(cbbo_frame: pd.DataFrame) -> tuple[OptionQuote, ...]:
     return tuple(quotes)
 
 
+def es_bars_from_frame(es_frame: pd.DataFrame) -> tuple[MinuteBar, ...]:
+    """Pure conversion: ES ohlcv-1m frame → time-ordered ``MinuteBar`` tuple.
+
+    This is the ES-only half of :func:`chain_day_from_frames`, factored out so
+    consumers that need only the underlying bars (batch excursion labels) never
+    touch the 200k-quote 0DTE chain.
+    """
+
+    return _minute_bars(es_frame)
+
+
 def chain_day_from_frames(
     day: date,
     es_frame: pd.DataFrame,
@@ -150,7 +161,7 @@ def chain_day_from_frames(
 
     return ChainDay(
         day=day,
-        underlying_bars=_minute_bars(es_frame),
+        underlying_bars=es_bars_from_frame(es_frame),
         quotes=_option_quotes(cbbo_frame),
     )
 
@@ -197,3 +208,25 @@ def normalize_day(
         key=cbbo_logical_key(day),
     )
     return chain_day_from_frames(day, es_frame, cbbo_frame)
+
+
+def normalize_es_day(
+    *,
+    data_root: str | Path,
+    pit_ledger_path: str | Path,
+    day: date,
+) -> tuple[MinuteBar, ...]:
+    """Load and normalize ONLY the day's ES front-month minute bars.
+
+    Excursion labels need the underlying bars but not the 0DTE chain; decoding
+    the full ``ChainDay`` would decrypt and materialize ~200k NBBO quotes per
+    day for nothing. Raises :class:`NormalizeError` when the ES batch is
+    missing or undecodable.
+    """
+
+    es_frame = _load_decoded(
+        data_root=data_root,
+        pit_ledger_path=pit_ledger_path,
+        key=es_logical_key(day),
+    )
+    return es_bars_from_frame(es_frame)

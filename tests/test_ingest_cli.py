@@ -103,3 +103,71 @@ def test_landing_service_constructs_with_local_key(tmp_path: Path) -> None:
     key_file = tmp_path / "raw" / "_keys" / "local-aesgcm-v1.key"
     assert key_file.exists()
     assert oct(key_file.stat().st_mode & 0o777) == "0o600"
+
+
+def test_calibrate_labels_prints_outcome_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import date
+
+    import marketpilot.features.implied_spx as implied_spx
+    import marketpilot.validation.excursion_batch as excursion_batch
+    from marketpilot.validation.excursion_batch import DayOutcome, LabelBatchReport
+
+    monkeypatch.setattr(
+        implied_spx,
+        "load_anchor_closes",
+        lambda start, end: {date(2026, 8, 14): 6400.0},
+    )
+
+    def fake_generate_labels(**kwargs: object) -> LabelBatchReport:
+        return LabelBatchReport(
+            start=kwargs["start"],  # type: ignore[arg-type]
+            end=kwargs["end"],  # type: ignore[arg-type]
+            labels_path=Path(str(kwargs["labels_path"])),
+            outcomes=(
+                DayOutcome(date(2026, 8, 17), "LABELLED"),
+                DayOutcome(date(2026, 8, 18), "GAP"),
+            ),
+        )
+
+    monkeypatch.setattr(excursion_batch, "generate_labels", fake_generate_labels)
+
+    code = main(
+        [
+            "calibrate-labels",
+            "--start",
+            "2026-08-17",
+            "--end",
+            "2026-08-18",
+            "--data-root",
+            str(tmp_path / "raw"),
+            "--pit-ledger",
+            str(tmp_path / "pit.jsonl"),
+            "--labels",
+            str(tmp_path / "labels.jsonl"),
+        ]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out["status"] == "OK"
+    assert out["counts"] == {"GAP": 1, "LABELLED": 1}
+    assert out["labels"] == str(tmp_path / "labels.jsonl")
+
+
+def test_calibrate_labels_fails_when_anchors_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import marketpilot.features.implied_spx as implied_spx
+    from marketpilot.features.implied_spx import AnchorCloseError
+
+    def raise_anchor_error(start: object, end: object) -> dict[object, float]:
+        raise AnchorCloseError("no official SPX closes available")
+
+    monkeypatch.setattr(implied_spx, "load_anchor_closes", raise_anchor_error)
+
+    code = main(["calibrate-labels", "--start", "2026-08-17", "--end", "2026-08-18"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert out["status"] == "FAIL"
+    assert "SPX" in out["reason"]

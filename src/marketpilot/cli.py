@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tomllib
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -137,6 +138,16 @@ def _parser() -> argparse.ArgumentParser:
     peek.add_argument("--force", action="store_true", help="decode batches over 256 MB")
     peek.add_argument("--data-root", default="data/raw")
     peek.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    labels = commands.add_parser(
+        "calibrate-labels",
+        help="Generate batch excursion labels from landed ES history",
+    )
+    labels.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    labels.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    labels.add_argument("--data-root", default="data/raw")
+    labels.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    labels.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
+    labels.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
     return parser
 
 
@@ -252,6 +263,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         except PeekError as exc:
             print(f"status=FAIL reason={exc}")
             return 2
+        return 0
+    if args.command == "calibrate-labels":
+        from marketpilot.features.implied_spx import AnchorCloseError, load_anchor_closes
+        from marketpilot.validation.excursion_batch import generate_labels
+
+        start = date.fromisoformat(args.start)
+        end = date.fromisoformat(args.end)
+        calendar_raw = tomllib.loads(Path(args.calendar).read_text(encoding="utf-8"))
+        early_closes = {
+            date.fromisoformat(entry["session_date"]): time.fromisoformat(entry["closes_at"])
+            for entry in calendar_raw.get("early_closes", [])
+        }
+        try:
+            # Widen the anchor fetch so the first window day can anchor on the
+            # prior trading day's official close.
+            anchors = load_anchor_closes(start - timedelta(days=10), end)
+        except AnchorCloseError as exc:
+            print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
+            return 2
+        try:
+            label_report = generate_labels(
+                data_root=args.data_root,
+                pit_ledger_path=args.pit_ledger,
+                anchors=anchors,
+                start=start,
+                end=end,
+                labels_path=args.labels,
+                early_closes=early_closes,
+            )
+        except ValueError as exc:
+            print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
+            return 2
+        print(
+            json.dumps(
+                {
+                    "status": "OK",
+                    "labels": str(label_report.labels_path),
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "counts": label_report.counts(),
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "readiness-check":
         try:
