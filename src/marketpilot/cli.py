@@ -128,6 +128,15 @@ def _parser() -> argparse.ArgumentParser:
     ingest_audit.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
     ingest_audit.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     ingest_audit.add_argument("--scope", default="spxw-whole-chain")
+    peek = commands.add_parser(
+        "ingest-peek",
+        help="Preview a landed batch (decrypts in memory, prints a table)",
+    )
+    peek.add_argument("--logical-key", required=True)
+    peek.add_argument("--limit", type=int, default=10)
+    peek.add_argument("--force", action="store_true", help="decode batches over 256 MB")
+    peek.add_argument("--data-root", default="data/raw")
+    peek.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     return parser
 
 
@@ -230,6 +239,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0 if ingest_report.ok else 2
+    if args.command == "ingest-peek":
+        from marketpilot.ingest.peek import PeekError, load_landed_batch, preview_batch
+
+        try:
+            batch = load_landed_batch(
+                data_root=args.data_root,
+                pit_ledger_path=args.pit_ledger,
+                logical_key=args.logical_key,
+            )
+            print(preview_batch(batch, limit=args.limit, force=args.force))
+        except PeekError as exc:
+            print(f"status=FAIL reason={exc}")
+            return 2
+        return 0
     if args.command == "readiness-check":
         try:
             manifest = load_readiness_manifest(args.manifest)

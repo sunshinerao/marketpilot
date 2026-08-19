@@ -31,6 +31,7 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
   "ruff>=0.9,<1",
+  "databento>=0.83,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -55,4 +56,8 @@ files = ["src/marketpilot"]
 
 [[tool.mypy.overrides]]
 module = "requests"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["dbn", "databento", "pandas"]
 ignore_missing_imports = true
