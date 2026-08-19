@@ -37,6 +37,9 @@ license scopes are evidenced. A Green provider report still does not enable exec
 - [x] Outcome-label contract rejects pre-cutoff data and requires an exact expiry window.
 - [ ] Run outcome-label generation on authorized licensed history.
 - [x] Leakage tests plus deterministic replay manifests.
+- [x] 12-month licensed history pulled and audited (2026-08-20): 251/251 trading
+  days of SPXW 0DTE minute NBBO, ES minute bars, and contract definitions;
+  ≈ $21.51 of the Databento free credit.
 - [x] Authorized-first encrypted raw-payload boundary and PostgreSQL safe-receipt adapter.
 - [ ] Production KMS/HSM, immutable object-store IAM/retention, and backup/restore drill.
 

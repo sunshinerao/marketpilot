@@ -130,13 +130,13 @@ data/derived/pit/batch-records.jsonl   # gitignored; normalized PIT batch record
   CSV enumeration with audit-landed definitions, POST form-body metadata calls
   (live-verified 414 fix for long symbol lists), `EMPTY_CHAIN` days cost nothing
   beyond enumeration, and already-landed days skip re-enumeration.
-- [ ] WP6 — First calibration pull (12-month window, `--strategy 0dte`).
-  **Requires owner approval: spends part of the Databento free credit.**
-  Progress 2026-08-18: one-week whole-parent validation pull (2026-08-10…14)
-  completed — 10/10 batches landed (≈ $9.90 actual), both scopes pass
-  `ingest-audit`, decryption round-trip verified (SPXW 2026-08-14: 524 MB DBN,
-  6,855,358 rows, SHA-256 matches receipt). Remaining: run `ingest-plan
-  --start … --end …` for the 12-month 0dte estimate, then approve the run.
+- [x] WP6 — First calibration pull (12-month window, `--strategy 0dte`).
+  Completed 2026-08-20: **251/251 trading days landed** for `spxw-0dte` and
+  `es-front-month` plus 251 definition batches (758 total with the validation
+  week); `ingest-audit` PASS on both scopes with zero missing and zero corrupt
+  records; ≈ **$21.51** estimated spend within the $125 free credit; real NBBO
+  spot-checked with dual `ts_event`/`ts_recv` timestamps present. The phase-2
+  data foundation is complete.
 
 ## 9. Review questions for the owner
 
