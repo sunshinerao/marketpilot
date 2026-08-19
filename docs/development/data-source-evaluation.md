@@ -25,6 +25,7 @@
 | Databento OPRA cbbo-1m 成本 | 单合约单日 ≈ $0.000032 → **SPXW 全链（约千级合约）单日 ≈ $0.03，三年 ≈ $25**，$125 免费额度足够首轮回测拉取 |
 | Databento ES 成本 | 分钟线（ohlcv-1m）单日 ≈ $0.005；逐笔 trades 单日 ≈ $0.34 |
 | Databento CGIF 指数数据集 | 🟡 目录中存在 `MAIN.CGIF`/`CGI.CGIF` 等（Cboe Global Indices Feed 渠道，可能含 SPX/VIX 指数），但**免费账户无权限**（schemas 为空、range 404）；定价与开通条件需询价——这是对 2.1 节"Databento 无任何指数点位数据集"的修正：数据集存在，获取门槛未决 |
+| Massive I:SPX EOD(免费 Basic 档） | ❌ 2026-08-19 实测：`/v2/aggs/ticker/I:SPX/range/1/day/...` 返回 **403 NOT_AUTHORIZED**——指数聚合（含 EOD）不在免费档内；SPX 官方收盘的现实免费源是 Cboe 官网 `SPX_History.csv`（1975 至今，校准锚点已接入） |
 
 未决项 #1、#11 关闭。新增未决项：CGIF 指数数据集的订阅价格与是否面向个人开放。
 
