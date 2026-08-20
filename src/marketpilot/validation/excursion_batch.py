@@ -72,6 +72,7 @@ type LabelOutcome = Literal[
     "SKIPPED_NO_ANCHOR",
     "SKIPPED_NO_PRIOR",
     "SKIPPED_COVERAGE",
+    "SKIPPED_ENTRY_AFTER_CLOSE",
     "GAP",
 ]
 
@@ -80,6 +81,7 @@ ALREADY_PRESENT: LabelOutcome = "ALREADY_PRESENT"
 SKIPPED_NO_ANCHOR: LabelOutcome = "SKIPPED_NO_ANCHOR"
 SKIPPED_NO_PRIOR: LabelOutcome = "SKIPPED_NO_PRIOR"
 SKIPPED_COVERAGE: LabelOutcome = "SKIPPED_COVERAGE"
+SKIPPED_ENTRY_AFTER_CLOSE: LabelOutcome = "SKIPPED_ENTRY_AFTER_CLOSE"
 GAP: LabelOutcome = "GAP"
 
 #: Injectable ES-bar source (tests inject synthetic bars; production decodes DBN).
@@ -304,6 +306,19 @@ def generate_labels(
             )
             day += timedelta(days=1)
             continue
+        day_close = early.get(day, close_time_et)
+        if entry_time_et >= day_close:
+            # e.g. a 13:00 entry on a 13:00 early-close day: no excursion
+            # window exists; skip explicitly instead of failing the batch.
+            outcomes.append(
+                DayOutcome(
+                    day,
+                    SKIPPED_ENTRY_AFTER_CLOSE,
+                    f"entry {entry_time_et} is not before close {day_close}",
+                )
+            )
+            day += timedelta(days=1)
+            continue
         try:
             record = build_label_record(
                 day=day,
@@ -311,7 +326,7 @@ def generate_labels(
                 prior_bars=bars_for(prior_day),
                 prior_cash_close=anchors[prior_day],
                 entry_time_et=entry_time_et,
-                close_time_et=early.get(day, close_time_et),
+                close_time_et=day_close,
                 es_record_id=es_records[day],
                 prior_es_record_id=es_records[prior_day],
                 computed_at=computed_at,
