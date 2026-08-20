@@ -144,7 +144,19 @@ class IngestPipeline:
                     # on enumeration just to estimate an already-present day.
                     items.append(PlannedDay(pull=pull, estimated_usd=0.0))
                     continue
-                resolved, estimate = self._resolve_zero_dte(pull, chain_resolver)
+                try:
+                    resolved, estimate = self._resolve_zero_dte(pull, chain_resolver)
+                except DatabentoApiError as exc:
+                    # A transient provider failure on one day must not abort a
+                    # multi-week plan; the day is an explicit gap, fillable later.
+                    empty_chain_outcomes.append(
+                        DayOutcome(
+                            pull.logical_key,
+                            DayStatus.GAP,
+                            f"plan failed ({exc.case})",
+                        )
+                    )
+                    continue
                 enumeration_usd += estimate
                 if resolved is None:
                     empty_chain_outcomes.append(
@@ -156,9 +168,14 @@ class IngestPipeline:
                     )
                     continue
                 pull = resolved
-            items.append(
-                PlannedDay(pull=pull, estimated_usd=self._gateway.estimate_cost(pull))
-            )
+            try:
+                items.append(
+                    PlannedDay(pull=pull, estimated_usd=self._gateway.estimate_cost(pull))
+                )
+            except DatabentoApiError as exc:
+                empty_chain_outcomes.append(
+                    DayOutcome(pull.logical_key, DayStatus.GAP, f"estimate failed ({exc.case})")
+                )
         total = round(sum(item.estimated_usd for item in items) + enumeration_usd, 6)
         plan_id = freeze_snapshot(
             {
