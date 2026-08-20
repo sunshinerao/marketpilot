@@ -17,11 +17,15 @@ Conservative, fail-closed economics for the StrikePilot 0DTE iron condor:
 - :func:`run_economics_batch` is the batch join used by the
   ``marketpilot evaluate-economics`` CLI: labels (implied center/close),
   tail distances, and chains via :func:`normalize_day`. Unpriceable and
-  missing-chain days are explicit counts, never silent drops.
+  missing-chain days are explicit counts, never silent drops. An optional
+  ``fees_path`` applies the versioned fee schedule
+  (:mod:`marketpilot.validation.fee_model`) so net PnL and net EV are
+  reported alongside the gross v1 numbers.
 
 Honesty rules honored here: every fill uses only quotes visible at-or-before
-the entry instant; prices are point-in-time NBBO, never midpoints; and an
-UNPRICEABLE day contributes zero to PnL aggregates but is counted.
+the entry instant; prices are point-in-time NBBO, never midpoints; an
+UNPRICEABLE day contributes zero to PnL aggregates but is counted; and fees
+only ever lower PnL — gross fields remain the fee-free v1 baseline.
 """
 
 from __future__ import annotations
@@ -43,6 +47,12 @@ from marketpilot.ingest.normalize import normalize_day
 from marketpilot.models.strikepilot.strikes import (
     IronCondorStrikes,
     select_iron_condor_strikes,
+)
+from marketpilot.validation.fee_model import (
+    SPXW_POINT_VALUE_USD,
+    FeeSchedule,
+    fees_for_condor,
+    load_fee_schedule,
 )
 from marketpilot.validation.tail_distances import TailDistances
 
@@ -256,6 +266,12 @@ class DayEconomics:
     (``wing_width - credit``), the intrinsic settlement loss, the day PnL,
     and close-beyond-short-strike breach flags. UNPRICEABLE days suppress all
     numeric fields — there is no defensible fill to report.
+
+    Fee fields are optional and default to the fee-free v1 behavior:
+    ``fees`` is the per-day fee drag in the same units as ``pnl`` (index
+    points; USD fees divided by the SPXW point value), and ``net_pnl`` is
+    ``pnl - fees``. When ``net_pnl`` is omitted it is derived, so with the
+    default ``fees=0`` net equals gross exactly.
     """
 
     day: date
@@ -267,10 +283,15 @@ class DayEconomics:
     pnl: float | None = None
     put_breached: bool | None = None
     call_breached: bool | None = None
+    fees: float = 0.0
+    net_pnl: float | None = None
 
     def __post_init__(self) -> None:
         if not self.regime.strip():
             raise CondorEconomicsError("regime must not be blank")
+        object.__setattr__(self, "fees", _finite(self.fees, "fees"))
+        if self.fees < 0:
+            raise CondorEconomicsError("fees must not be negative")
         numeric = ("credit", "max_loss", "settlement_loss", "pnl")
         if self.status is PricingStatus.PRICED:
             for name in numeric:
@@ -293,12 +314,24 @@ class DayEconomics:
                 )
             ):
                 raise CondorEconomicsError("pnl must equal credit minus settlement_loss")
+            assert self.pnl is not None  # enforced above
+            expected_net = _finite(self.pnl - self.fees, "net_pnl")
+            if self.net_pnl is None:
+                object.__setattr__(self, "net_pnl", expected_net)
+            elif not math.isclose(
+                _finite(self.net_pnl, "net_pnl"), expected_net, rel_tol=0.0, abs_tol=1e-9
+            ):
+                raise CondorEconomicsError("net_pnl must equal pnl minus fees")
         else:
             for name in numeric:
                 if getattr(self, name) is not None:
                     raise CondorEconomicsError(f"UNPRICEABLE day must not carry {name}")
             if self.put_breached is not None or self.call_breached is not None:
                 raise CondorEconomicsError("UNPRICEABLE day must not carry breach flags")
+            if self.fees != 0.0:
+                raise CondorEconomicsError("UNPRICEABLE day must not carry fees")
+            if self.net_pnl is not None:
+                raise CondorEconomicsError("UNPRICEABLE day must not carry net_pnl")
 
 
 def evaluate_day(
@@ -308,6 +341,7 @@ def evaluate_day(
     center: float,
     distances: TailDistances,
     close_price: float,
+    fees: float = 0.0,
 ) -> DayEconomics:
     """Join strikes, the conservative entry fill, and settlement for one day.
 
@@ -316,6 +350,10 @@ def evaluate_day(
     wings). An unusable entry fill yields an UNPRICEABLE day; otherwise the
     day PnL is ``credit - settlement_loss`` with breach flags marking whether
     the close finished beyond either short strike.
+
+    ``fees`` is the per-day fee drag in index points (USD fees divided by
+    the SPXW point value). It defaults to zero — the fee-free v1 behavior —
+    and applies only when the day is PRICED.
     """
 
     if distances.day != chain.day:
@@ -323,6 +361,9 @@ def evaluate_day(
             f"distances day {distances.day} does not match chain day {chain.day}"
         )
     center_value = _finite(center, "center")
+    fees_value = _finite(fees, "fees")
+    if fees_value < 0:
+        raise CondorEconomicsError("fees must not be negative")
     strikes = select_iron_condor_strikes(
         center=center_value,
         up_tail=distances.up_distance,
@@ -349,6 +390,7 @@ def evaluate_day(
         pnl=pnl,
         put_breached=close < strikes.short_put,
         call_breached=close > strikes.short_call,
+        fees=fees_value,
     )
 
 
@@ -405,6 +447,11 @@ class EconomicsSummary:
     unpriceable day as a zero-PnL no-trade). ``cvar_95`` is the mean of the
     worst 5% of priced daily PnL (signed). With no priced days the per-day
     statistics are None — never a fabricated zero.
+
+    Fee aggregates are always computed: ``total_fees`` sums the per-day fee
+    drag over priced days, ``net_total_pnl`` is ``total_pnl - total_fees``,
+    and ``net_ev`` is the per-candidate-day expected value after fees. With
+    fee-free inputs (all ``fees=0``) the net fields equal the gross fields.
     """
 
     n_priced: int
@@ -416,6 +463,9 @@ class EconomicsSummary:
     max_daily_loss: float | None
     win_rate: float | None
     regimes: Mapping[str, RegimeEconomics] = field(default_factory=dict)
+    total_fees: float = 0.0
+    net_total_pnl: float = 0.0
+    net_ev: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -427,6 +477,9 @@ class EconomicsSummary:
             "cvar_95": self.cvar_95,
             "max_daily_loss": self.max_daily_loss,
             "win_rate": self.win_rate,
+            "total_fees": self.total_fees,
+            "net_total_pnl": self.net_total_pnl,
+            "net_ev": self.net_ev,
             "regimes": {key: self.regimes[key].to_dict() for key in sorted(self.regimes)},
         }
 
@@ -438,8 +491,11 @@ def summarize(day_economics: Sequence[DayEconomics]) -> EconomicsSummary:
     priced = [day for day in days if day.status is PricingStatus.PRICED]
     pnl_values = tuple(day.pnl for day in priced if day.pnl is not None)
     total_pnl = _finite(math.fsum(pnl_values), "total_pnl") if pnl_values else 0.0
+    total_fees = _finite(math.fsum(day.fees for day in priced), "total_fees")
+    net_total_pnl = _finite(total_pnl - total_fees, "net_total_pnl")
     n_candidates = len(days)
     ev = total_pnl / n_candidates if n_candidates else 0.0
+    net_ev = net_total_pnl / n_candidates if n_candidates else 0.0
 
     by_regime: dict[str, list[DayEconomics]] = defaultdict(list)
     for day in days:
@@ -472,6 +528,9 @@ def summarize(day_economics: Sequence[DayEconomics]) -> EconomicsSummary:
         max_daily_loss=_max_daily_loss(pnl_values) if pnl_values else None,
         win_rate=_win_rate(pnl_values) if pnl_values else None,
         regimes=MappingProxyType(regimes),
+        total_fees=total_fees,
+        net_total_pnl=net_total_pnl,
+        net_ev=_finite(net_ev, "net_ev"),
     )
 
 
@@ -572,6 +631,7 @@ def run_economics_batch(
     start: date,
     end: date,
     chain_loader: ChainLoader | None = None,
+    fees_path: str | Path | None = None,
 ) -> EconomicsBatchReport:
     """Join labels, tail distances, and chains over ``[start, end]``.
 
@@ -580,10 +640,24 @@ def run_economics_batch(
     as ``n_missing_distances``; joined days whose chain cannot be normalized
     are counted as ``n_missing_chain``. All are explicit — no day is ever
     silently dropped.
+
+    ``fees_path`` optionally points at a versioned fee-schedule TOML (see
+    :mod:`marketpilot.validation.fee_model`). When provided, each priced day
+    is charged opening-side fees for one contract per leg — converted from
+    USD to index points at the SPXW point value (100 USD/point) — and the
+    summary's ``total_fees`` / ``net_total_pnl`` / ``net_ev`` reflect the
+    drag. When absent, behavior is exactly the fee-free v1 baseline
+    (``fees=0``, so net fields equal the gross fields).
     """
 
     if start > end:
         raise CondorEconomicsError(f"start {start} must not be after end {end}")
+
+    fee_points = 0.0
+    if fees_path is not None:
+        schedule: FeeSchedule = load_fee_schedule(fees_path)
+        # Opening-only: 0DTE condors expire at settlement, never closed.
+        fee_points = fees_for_condor(schedule, contracts_per_leg=1) / SPXW_POINT_VALUE_USD
 
     loader: ChainLoader
     if chain_loader is None:
@@ -634,6 +708,7 @@ def run_economics_batch(
                 center=label.entry_price,
                 distances=record,
                 close_price=label.close_price,
+                fees=fee_points,
             )
         )
     n_missing_distances = sum(1 for day in labels if day not in distances)

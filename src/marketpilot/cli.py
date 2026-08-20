@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -165,6 +165,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     economics.add_argument("--data-root", default="data/raw")
     economics.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
+    economics.add_argument(
+        "--fees",
+        default="config/fees-v1.toml",
+        help="versioned fee-schedule TOML applied to net economics "
+        "(default: config/fees-v1.toml; pass '' to skip)",
+    )
+    economics.add_argument(
+        "--no-fees",
+        action="store_true",
+        help="skip fee modeling entirely (fee-free v1 baseline)",
+    )
     extract = commands.add_parser(
         "extract-features",
         help="Compute entry-time chain features for labelled days",
@@ -192,7 +203,7 @@ def _parser() -> argparse.ArgumentParser:
     distances.add_argument("--out", default="data/derived/labels/distances.jsonl")
     distances.add_argument(
         "--model",
-        choices=("iv-regime", "unconditional"),
+        choices=("iv-regime", "unconditional", "buffered"),
         default="iv-regime",
     )
     distances.add_argument("--quantile", type=float, default=0.975)
@@ -361,6 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "evaluate-economics":
         from marketpilot.validation.condor_economics import run_economics_batch
 
+        fees_path = None if args.no_fees or not args.fees else args.fees
         try:
             economics_report = run_economics_batch(
                 labels_path=args.labels,
@@ -369,6 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pit_ledger_path=args.pit_ledger,
                 start=date.fromisoformat(args.start),
                 end=date.fromisoformat(args.end),
+                fees_path=fees_path,
             )
         except (OSError, ValueError) as exc:
             print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
@@ -412,9 +425,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             EntryFeatures,
             ExcursionLabel,
             IvRegimeTailModel,
+            TailModel,
             UnconditionalTailModel,
             load_tail_model_config,
         )
+        from marketpilot.validation.tail_model_v2 import BufferCalibratedTailModel
 
         excursion_labels = [
             ExcursionLabel.from_mapping(json.loads(line))
@@ -427,11 +442,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if line.strip()
         ]
         config = load_tail_model_config(args.rules)
-        factory = (
-            (lambda: IvRegimeTailModel(config=config))
-            if args.model == "iv-regime"
-            else (lambda: UnconditionalTailModel(config=config))
-        )
+        factories: dict[str, Callable[[], TailModel]] = {
+            "iv-regime": lambda: IvRegimeTailModel(config=config),
+            "unconditional": lambda: UnconditionalTailModel(config=config),
+            "buffered": lambda: BufferCalibratedTailModel(config=config),
+        }
+        factory = factories[args.model]
         distance_report = recommend_walk_forward(
             labels=excursion_labels,
             features=entry_features,

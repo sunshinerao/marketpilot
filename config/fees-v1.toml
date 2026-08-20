@@ -1,0 +1,26 @@
+# Fee schedule v1 for the StrikePilot 0DTE iron-condor economics.
+#
+# These values are CONSERVATIVE ESTIMATES pending broker statements: they
+# deliberately assume full retail pricing. SPXW commission-free offers
+# (e.g. broker promotions waiving commissions on SPX/SPXW index options)
+# are NOT assumed — if such an offer applies, realized fees will be lower
+# than modeled here, never higher. Recalibrate against actual statements
+# before relying on the net economics for any promotion decision.
+#
+# All monetary values are USD. Per-contract fees apply to each of the four
+# condor legs; the per-order fixed fee applies once per order.
+
+version = "fees-v1"
+
+[per_contract]
+# Broker commission per contract per side (default: 0.65 USD — standard
+# retail per-contract options commission).
+commission_usd = 0.65
+# Exchange + options regulatory (ORF) and clearing fees per contract per
+# side (default: 0.05 USD — conservative round-up of OCC/ORF/exchange fees).
+regulatory_usd = 0.05
+
+[per_order]
+# Fixed ticket/order fee per order (default: 0 USD — most retail brokers
+# charge none; modeled for completeness).
+fixed_usd = 0.0

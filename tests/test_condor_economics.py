@@ -666,3 +666,307 @@ def test_cli_evaluate_economics_fails_loudly_on_bad_inputs(
     assert code == 2
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "FAIL"
+
+
+# --- fee-aware economics ----------------------------------------------------
+
+# Custom schedule: 4 legs x 1 contract x (1.00 + 0.25) + 0 = 5.00 USD,
+# i.e. a 0.05-point drag at the 100 USD/point SPXW multiplier.
+FEE_BODY = """version = "fees-v1"
+
+[per_contract]
+commission_usd = 1.0
+regulatory_usd = 0.25
+
+[per_order]
+fixed_usd = 0.0
+"""
+FEE_POINTS = 5.00 / 100.0
+
+
+def _fee_schedule_path(tmp_path: Path) -> Path:
+    path = tmp_path / "fees.toml"
+    path.write_text(FEE_BODY, encoding="utf-8")
+    return path
+
+
+def test_day_economics_zero_fees_net_equals_gross() -> None:
+    day = _priced_day(DAY, 1.8)
+    assert day.fees == 0.0
+    assert day.net_pnl == pytest.approx(day.pnl)
+
+
+def test_day_economics_fees_derive_and_validate_net() -> None:
+    day = DayEconomics(
+        day=DAY,
+        regime="LOW_VOL",
+        status=PricingStatus.PRICED,
+        credit=1.8,
+        max_loss=3.2,
+        settlement_loss=0.0,
+        pnl=1.8,
+        put_breached=False,
+        call_breached=False,
+        fees=FEE_POINTS,
+    )
+    assert day.net_pnl == pytest.approx(1.8 - FEE_POINTS)
+    explicit = DayEconomics(
+        day=DAY,
+        regime="LOW_VOL",
+        status=PricingStatus.PRICED,
+        credit=1.8,
+        max_loss=3.2,
+        settlement_loss=0.0,
+        pnl=1.8,
+        put_breached=False,
+        call_breached=False,
+        fees=FEE_POINTS,
+        net_pnl=1.8 - FEE_POINTS,
+    )
+    assert explicit.net_pnl == pytest.approx(1.75)
+    with pytest.raises(CondorEconomicsError, match="net_pnl must equal pnl minus fees"):
+        DayEconomics(
+            day=DAY,
+            regime="LOW_VOL",
+            status=PricingStatus.PRICED,
+            credit=1.8,
+            max_loss=3.2,
+            settlement_loss=0.0,
+            pnl=1.8,
+            put_breached=False,
+            call_breached=False,
+            fees=FEE_POINTS,
+            net_pnl=1.8,
+        )
+    with pytest.raises(CondorEconomicsError, match="fees must not be negative"):
+        DayEconomics(
+            day=DAY,
+            regime="LOW_VOL",
+            status=PricingStatus.PRICED,
+            credit=1.8,
+            max_loss=3.2,
+            settlement_loss=0.0,
+            pnl=1.8,
+            put_breached=False,
+            call_breached=False,
+            fees=-0.01,
+        )
+    with pytest.raises(CondorEconomicsError, match="UNPRICEABLE day must not carry fees"):
+        DayEconomics(
+            day=DAY,
+            regime="LOW_VOL",
+            status=PricingStatus.UNPRICEABLE,
+            fees=FEE_POINTS,
+        )
+
+
+def test_evaluate_day_applies_fee_drag_to_net_pnl() -> None:
+    result = evaluate_day(
+        chain=_chain(_standard_quotes()),
+        entry=ENTRY,
+        center=6441.0,
+        distances=_distances(),
+        close_price=6420.0,
+        fees=FEE_POINTS,
+    )
+    assert result.status is PricingStatus.PRICED
+    assert result.pnl == pytest.approx(EXPECTED_CREDIT)
+    assert result.fees == pytest.approx(FEE_POINTS)
+    assert result.net_pnl == pytest.approx(EXPECTED_CREDIT - FEE_POINTS)
+    # Default remains the fee-free v1 behavior.
+    fee_free = evaluate_day(
+        chain=_chain(_standard_quotes()),
+        entry=ENTRY,
+        center=6441.0,
+        distances=_distances(),
+        close_price=6420.0,
+    )
+    assert fee_free.fees == 0.0
+    assert fee_free.net_pnl == pytest.approx(EXPECTED_CREDIT)
+    with pytest.raises(CondorEconomicsError, match="fees must not be negative"):
+        evaluate_day(
+            chain=_chain(_standard_quotes()),
+            entry=ENTRY,
+            center=6441.0,
+            distances=_distances(),
+            close_price=6420.0,
+            fees=-0.01,
+        )
+
+
+def test_summarize_fee_aggregates() -> None:
+    days = [
+        DayEconomics(
+            day=date(2026, 8, 3),
+            regime="LOW_VOL",
+            status=PricingStatus.PRICED,
+            credit=1.8,
+            max_loss=3.2,
+            settlement_loss=0.0,
+            pnl=1.8,
+            put_breached=False,
+            call_breached=False,
+            fees=FEE_POINTS,
+        ),
+        DayEconomics(
+            day=date(2026, 8, 4),
+            regime="LOW_VOL",
+            status=PricingStatus.PRICED,
+            credit=1.8,
+            max_loss=3.2,
+            settlement_loss=3.0,
+            pnl=-1.2,
+            put_breached=False,
+            call_breached=True,
+            fees=FEE_POINTS,
+        ),
+        DayEconomics(
+            day=date(2026, 8, 5),
+            regime="LOW_VOL",
+            status=PricingStatus.UNPRICEABLE,
+        ),
+    ]
+    summary = summarize(days)
+    assert summary.total_pnl == pytest.approx(0.6)
+    assert summary.total_fees == pytest.approx(2 * FEE_POINTS)
+    assert summary.net_total_pnl == pytest.approx(0.6 - 2 * FEE_POINTS)
+    # Net EV is per candidate day, including the unpriceable no-trade day.
+    assert summary.net_ev == pytest.approx((0.6 - 2 * FEE_POINTS) / 3)
+    assert summary.ev == pytest.approx(0.6 / 3)
+    payload = summary.to_dict()
+    assert payload["total_fees"] == pytest.approx(2 * FEE_POINTS)
+    assert payload["net_total_pnl"] == pytest.approx(0.6 - 2 * FEE_POINTS)
+    assert payload["net_ev"] == pytest.approx((0.6 - 2 * FEE_POINTS) / 3)
+
+
+def test_summarize_fee_free_net_equals_gross() -> None:
+    summary = summarize(_summary_series())
+    assert summary.total_fees == 0.0
+    assert summary.net_total_pnl == pytest.approx(summary.total_pnl)
+    assert summary.net_ev == pytest.approx(summary.ev)
+
+
+def test_run_economics_batch_with_fees_path(tmp_path: Path) -> None:
+    labels, distances = _batch_inputs(tmp_path)
+    report = run_economics_batch(
+        labels_path=labels,
+        distances_path=distances,
+        data_root=tmp_path / "unused-raw",
+        pit_ledger_path=tmp_path / "unused-pit.jsonl",
+        start=BATCH_START,
+        end=BATCH_END,
+        chain_loader=_batch_loader,
+        fees_path=_fee_schedule_path(tmp_path),
+    )
+    assert report.summary.n_priced == 1
+    assert report.summary.total_pnl == pytest.approx(EXPECTED_CREDIT)
+    assert report.summary.total_fees == pytest.approx(FEE_POINTS)
+    assert report.summary.net_total_pnl == pytest.approx(EXPECTED_CREDIT - FEE_POINTS)
+    # One candidate day was priced; missing days are not candidates.
+    assert report.summary.net_ev == pytest.approx(EXPECTED_CREDIT - FEE_POINTS)
+
+
+def test_run_economics_batch_without_fees_path_is_fee_free(tmp_path: Path) -> None:
+    labels, distances = _batch_inputs(tmp_path)
+    report = run_economics_batch(
+        labels_path=labels,
+        distances_path=distances,
+        data_root=tmp_path / "unused-raw",
+        pit_ledger_path=tmp_path / "unused-pit.jsonl",
+        start=BATCH_START,
+        end=BATCH_END,
+        chain_loader=_batch_loader,
+    )
+    assert report.summary.total_fees == 0.0
+    assert report.summary.net_total_pnl == pytest.approx(report.summary.total_pnl)
+    assert report.summary.net_ev == pytest.approx(report.summary.ev)
+
+
+def test_run_economics_batch_rejects_bad_fee_schedule(tmp_path: Path) -> None:
+    labels, distances = _batch_inputs(tmp_path)
+    bad = tmp_path / "bad-fees.toml"
+    bad.write_text(FEE_BODY.replace("1.0", "-1.0", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="must not be negative"):
+        run_economics_batch(
+            labels_path=labels,
+            distances_path=distances,
+            data_root=tmp_path / "unused-raw",
+            pit_ledger_path=tmp_path / "unused-pit.jsonl",
+            start=BATCH_START,
+            end=BATCH_END,
+            chain_loader=_batch_loader,
+            fees_path=bad,
+        )
+
+
+def _run_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra: list[str],
+) -> tuple[int, dict[str, object]]:
+    labels, distances = _batch_inputs(tmp_path)
+    monkeypatch.setattr(
+        "marketpilot.validation.condor_economics.normalize_day",
+        lambda *, data_root, pit_ledger_path, day: _batch_loader(day),
+    )
+    code = main(
+        [
+            "evaluate-economics",
+            "--start",
+            BATCH_START.isoformat(),
+            "--end",
+            BATCH_END.isoformat(),
+            "--labels",
+            str(labels),
+            "--distances",
+            str(distances),
+            "--data-root",
+            str(tmp_path / "unused-raw"),
+            "--pit-ledger",
+            str(tmp_path / "unused-pit.jsonl"),
+            *extra,
+        ]
+    )
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_cli_evaluate_economics_default_fees_applied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The CLI default config/fees-v1.toml: 4 legs x (0.65 + 0.05) = 2.80 USD,
+    # a 0.028-point drag at 100 USD/point.
+    code, out = _run_cli(tmp_path, monkeypatch, capsys, [])
+    assert code == 0
+    assert out["status"] == "OK"
+    assert math.isclose(out["total_fees"], 0.028)
+    assert math.isclose(out["total_pnl"], EXPECTED_CREDIT)
+    assert math.isclose(out["net_total_pnl"], EXPECTED_CREDIT - 0.028)
+    assert math.isclose(out["net_ev"], EXPECTED_CREDIT - 0.028)
+
+
+def test_cli_evaluate_economics_explicit_fees_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fees = _fee_schedule_path(tmp_path)
+    code, out = _run_cli(tmp_path, monkeypatch, capsys, ["--fees", str(fees)])
+    assert code == 0
+    assert math.isclose(out["total_fees"], FEE_POINTS)
+    assert math.isclose(out["net_total_pnl"], EXPECTED_CREDIT - FEE_POINTS)
+
+
+def test_cli_evaluate_economics_no_fees_flag_and_empty_fees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for extra in (["--no-fees"], ["--fees", ""]):
+        code, out = _run_cli(tmp_path, monkeypatch, capsys, extra)
+        assert code == 0
+        assert out["total_fees"] == 0.0
+        assert math.isclose(out["net_total_pnl"], out["total_pnl"])
+        assert math.isclose(out["net_ev"], out["ev"])
