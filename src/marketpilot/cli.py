@@ -176,6 +176,21 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip fee modeling entirely (fee-free v1 baseline)",
     )
+    exits = commands.add_parser(
+        "evaluate-exits",
+        help="Compare exit rules (hold/profit-target/stop-loss/time-exit) "
+        "on the same conservative entry fills",
+    )
+    exits.add_argument("--start", required=True, help="first day, YYYY-MM-DD")
+    exits.add_argument("--end", required=True, help="last day, YYYY-MM-DD")
+    exits.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
+    exits.add_argument(
+        "--distances",
+        default="data/derived/tail-distances/distances.jsonl",
+        help="workstream-F TailDistances JSONL (records shaped as TailDistances only)",
+    )
+    exits.add_argument("--data-root", default="data/raw")
+    exits.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     extract = commands.add_parser(
         "extract-features",
         help="Compute entry-time chain features for labelled days",
@@ -387,6 +402,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
             return 2
         print(json.dumps(economics_report.to_dict(), sort_keys=True))
+        return 0
+    if args.command == "evaluate-exits":
+        from marketpilot.validation.exit_rules import (
+            ExitRule,
+            ExitRuleKind,
+            run_exit_comparison,
+        )
+
+        rules = (
+            ExitRule(kind=ExitRuleKind.HOLD),
+            ExitRule(kind=ExitRuleKind.PROFIT_TARGET),
+            ExitRule(kind=ExitRuleKind.STOP_LOSS),
+            ExitRule(kind=ExitRuleKind.TIME_EXIT),
+        )
+        try:
+            exit_report = run_exit_comparison(
+                labels_path=args.labels,
+                distances_path=args.distances,
+                rules=rules,
+                start=date.fromisoformat(args.start),
+                end=date.fromisoformat(args.end),
+                data_root=args.data_root,
+                pit_ledger_path=args.pit_ledger,
+            )
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
+            return 2
+        print(json.dumps(exit_report.to_dict(), sort_keys=True))
         return 0
     if args.command == "extract-features":
         from marketpilot.features.entry_snapshot_batch import generate_entry_features
