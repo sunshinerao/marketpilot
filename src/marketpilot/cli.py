@@ -148,6 +148,9 @@ def _parser() -> argparse.ArgumentParser:
     labels.add_argument("--pit-ledger", default="data/derived/pit/batch-records.jsonl")
     labels.add_argument("--labels", default="data/derived/labels/excursions.jsonl")
     labels.add_argument("--calendar", default="config/us-equity-calendar-v1.toml")
+    labels.add_argument(
+        "--entry", default="09:45", help="entry time, ET wall clock (default 09:45)"
+    )
     economics = commands.add_parser(
         "evaluate-economics",
         help="Conservative iron-condor economics: labels + tail distances + chains",
@@ -337,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 end=end,
                 labels_path=args.labels,
                 early_closes=early_closes,
+                entry_time_et=time.fromisoformat(args.entry),
             )
         except ValueError as exc:
             print(json.dumps({"status": "FAIL", "reason": str(exc)}, sort_keys=True))
